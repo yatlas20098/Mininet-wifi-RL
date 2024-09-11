@@ -23,7 +23,8 @@ if not os.path.exists(dataset_directory):
 
 if not os.path.exists(log_directory):
     os.makedirs(log_directory)
-    
+
+# Due to limitation of thread control in Mininet-Wifi, so I use a rate file to represent the change in rate that send by cluster
 for sensor_id in range(f):
     rate_file = f'{log_directory}/sensor_{sensor_id}_rate.txt'
     with open(rate_file, 'w') as file:
@@ -31,9 +32,12 @@ for sensor_id in range(f):
 
 print(f"Created rate files for {f} sensors in {log_directory}")    
 
+#size for each chunk
 chunk_size = 5000
 
+
 def check_received_data(base_output_file, num_sensors, min_lines=10):
+    #To run the RL agent, we need to receive at least 10 line in cluster head.
     for i in range(num_sensors):
         file_path = f'{base_output_file}_{i}.txt'
         if not os.path.exists(file_path):
@@ -43,39 +47,8 @@ def check_received_data(base_output_file, num_sensors, min_lines=10):
                 return False
     return True
 
-# def continuous_rate_listener(sensor, sensor_id):
-#     rate_file = f'/mydata/mydata/RL_agent/output/sensor_{sensor_id}_rate.txt'
-#     # sensor.cmd(f'mkdir -p {rate_dir}')
-#     # sensor.cmd(f'echo "0.5" > {rate_file}')
-    
-#     while True:
-#         action = sensor.cmd(f'nc -ul -p 6001')
-#         if action.strip():
-#             try:
-#                 action = float(action)
-#                 info(f"Sensor {sensor_id}: Received new action: {action}\n")
-#                 if action == 1:
-#                     new_rate = 0
-#                 elif action == 2:
-#                     new_rate = 2
-#                 elif action == 3:
-#                     new_rate = 1
-#                 else:
-#                     info(f"Sensor {sensor_id}: Received invalid action: {action}\n")
-#                     continue
-                
-#                 # Write the new rate to the file
-#                 sensor.cmd(f'echo "{new_rate}" > {rate_file}')
-#                 info(f"Sensor {sensor_id}: Updated rate file with new rate: {new_rate}\n")
-                
-#             except ValueError:
-#                 info(f"Sensor {sensor_id}: Received invalid action: {action}\n")
-                
-# def preprocess_dataset_into_chunks(dataset_path, chunk_size):
-#     with open(dataset_path, 'r') as file:
-#         lines = file.readlines()
-#     return [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
 def preprocess_dataset_into_chunks(dataset_path, chunk_size):
+    # cache the dataset into memory first
     with open(dataset_path, 'r') as file:
         lines = file.readlines()
     # chunks = [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
@@ -83,6 +56,7 @@ def preprocess_dataset_into_chunks(dataset_path, chunk_size):
     return [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
 
 datasets = {}
+    # Each sensor will be stored different dataset
 for i in range(f):
     tower_number = i + 2  # Start from tower2 to tower11
     file_path = f'{dataset_directory}/tower{tower_number}Data_processed.csv'
@@ -93,6 +67,8 @@ for i in range(f):
         datasets[i] = []
         
 def send_messages(sensor, ch_ip, sensor_id):
+    #function used to send message from sensor to cluster head
+
     chunks = datasets[sensor_id]
     info(f"chunk size {len(chunks)}\n")
     rate_file = f'/mydata/mydata/RL_agent/output/sensor_{sensor_id}_rate.txt'
@@ -103,11 +79,12 @@ def send_messages(sensor, ch_ip, sensor_id):
     packetnumber = 0
     port = 5001 + sensor_id
     rate = 2  # Initial rate
-
+    
     for chunk in chunks:
         packet_data = ''.join(chunk)
         packet_size_kb = len(packet_data) / 1024.0
         
+        #read rate from file to reflect rate change
         with open(rate_file, 'r') as file:
             rate = float(file.read().strip())
         
@@ -124,67 +101,17 @@ def send_messages(sensor, ch_ip, sensor_id):
         packetnumber += 1
         if packetnumber == 300:
             break
-
-        # new_rate = check_for_new_rate()
-        # if new_rate is not None:
-        #     rate = new_rate
-        
+            
         if rate > 0:
             time.sleep(1.0 / rate)
         else:
             time.sleep(1) 
 
     info(f"Sensor {sensor_id}: Finished sending messages\n")
-# def send_messages(sensor, ch_ip, sensor_id):
-#     chunks = datasets[sensor_id]
-#     if not chunks:
-#         info(f"Sensor {sensor_id}: No data available. Skipping send_messages.\n")
-#         return
-    
-#     packetnumber = 0
-#     port = 5001 + sensor_id
-#     rate = 0.5  # Initial rate
-
-#     for chunk in chunks:
-#         packet_data = ''.join(chunk)
-#         packet_size_kb = len(packet_data) / 1024.0
-        
-#         current_time = time.time()
-#         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(current_time))
-#         ms = int((current_time - int(current_time)) * 1000)
-        
-#         if rate > 0:
-#             sensor.cmd(f'echo "{packet_data}" | nc -q 1 -u -i 2 {ch_ip} {port}')
-#             info(f"Sensor {sensor_id}: Sent packet {packetnumber} of size {packet_size_kb:.2f} KB at {timestamp}.{ms:03d}\n")
-#         else:
-#             info(f"Sensor {sensor_id}: Skipped sending packet {packetnumber} due to rate 0 at {timestamp}.{ms:03d}\n")
-        
-#         packetnumber += 1
-#         if packetnumber == 100:
-#             break
-
-#         action = sensor.cmd(f'nc -ul -p 6001 -w 1')
-#         if action:
-#             try:
-#                 action = float(action)
-#                 info(f"Sensor {sensor_id}: Received new action: {action}\n")
-#             except ValueError:
-#                 info(f"Sensor {sensor_id}: Received invalid action: {action}\n")
-#         if action == 1:
-#             rate = 0
-#         elif action == 2:
-#             rate = 0.5
-#         elif action == 3:
-#             rate = 1
-        
-#         if rate > 0:
-#             time.sleep(1.0 / rate)
-#         else:
-#             time.sleep(1) 
-
-#     info(f"Sensor {sensor_id}: Finished sending messages\n")
 
 def train_agent(env, agent, n_episodes=1000):
+    #train the model
+    
     episodes = 20
     for episode in tqdm(range(n_episodes)):
         obs, env_info = env.reset()
@@ -220,14 +147,16 @@ def train_agent(env, agent, n_episodes=1000):
     print(f"Training completed. Final epsilon: {agent.epsilon}")
 
 def receive_messages(node):
+    #function use for cluster head to receive message
     base_output_file = f'{log_directory}/ch_received_from_sensor'
     
     for i in range(f):
+        #save the data that receive from different sensor to different file
         output_file = f'{base_output_file}_{i}.txt'
         node.cmd(f'touch {output_file}')
         node.cmd(f'while true; do nc -ul -p {5001 + i} >> {output_file} & done &')
         info(f"Receiver: Started listening on port {5001 + i} for sensor {i}\n")
-
+    #capture the network by pcap
     pcap_file = f'{log_directory}/capture.pcap'
     node.cmd(f'tcpdump -i {node.defaultIntf().name} -n udp portrange 5001-{5001+f-1} -w {pcap_file} &')
     info(f"Receiver: Started tcpdump capture on ports 5001-{5001+f-1}\n")
@@ -236,9 +165,9 @@ def receive_messages(node):
         time.sleep(1)
 
 def rl_agent_process(env, agent, sensors, cluster_head):
-    
+    #RL agent make decision on rate for each sensor based on their similarity
     step = 0
-    training_interval = 50  # Train every 100 steps
+    training_interval = 300  # Train every 300 steps
     training_episodes = 20
 
     while True:
@@ -250,6 +179,7 @@ def rl_agent_process(env, agent, sensors, cluster_head):
         info(f"Cluster Head: New rates: {new_rates}")
         
         for i, rate in enumerate(new_rates):
+            #save the rate that decide by RL_agent to file, 1 means stop, 2 means 2 packet per second, 3 means 1 packet per second 
             rate_file = f'/mydata/mydata/RL_agent/output/sensor_{i}_rate.txt'
             with open(rate_file, 'w') as file:
                 if rate == 1:
@@ -263,10 +193,10 @@ def rl_agent_process(env, agent, sensors, cluster_head):
 
         time.sleep(5)
 
-        # if step % training_interval == 0:
-        #     print(f"Starting training at step {step}")
-        #     train_agent(env, agent)
-        #     print(f"Finished training at step {step}")
+        if step % training_interval == 0:
+            print(f"Starting training at step {step}")
+            train_agent(env, agent)
+            print(f"Finished training at step {step}")
             
         if step % 100 == 0:
             agent.save_q_table('q_table.pkl')
@@ -275,23 +205,28 @@ def rl_agent_process(env, agent, sensors, cluster_head):
         step += 1
 
 def stop_receivers(node):
+    #stop receiver
     node.cmd('pkill -f "nc -ul"')
     node.cmd('pkill tcpdump')
     info("Stopped all nc receivers and tcpdump\n")
 
 def topology(args):
+    #build network
     net = Mininet_wifi(controller=Controller, link=wmediumd,
                        wmediumd_mode=interference)
 
     info("*** Creating nodes\n")
+    #create accesspoint
     ap23 = net.addAccessPoint('ap23', ssid='new-ssid', mode='g', channel='5', position='50,50,0')
 
+    
+    #create 10 sensors
     sensors = []
     for i in range(f):
         ip_address = f'192.168.0.{i + 1}/24'
         sensors.append(net.addStation(f's{i}', ip=ip_address,
                                       range='116', position=f'{30 + i},30,0'))
-
+    #create cluster head
     cluster_head = net.addStation('ch', ip='192.168.0.100/24',
                                   range='150', position='70,70,0')
 
@@ -309,6 +244,8 @@ def topology(args):
     info("*** Setting up communication flow\n")
     try:
         info("*** Starting receivers\n")
+        
+        #let cluster starter to listen to all the sensor
         receive_thread = threading.Thread(target=receive_messages, args=(cluster_head,))
         receive_thread.start()
         
