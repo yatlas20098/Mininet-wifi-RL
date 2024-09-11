@@ -301,7 +301,6 @@ def topology(args):
     info("*** Configuring wifi nodes\n")
     net.configureWifiNodes()
 
-    info("*** Creating links\n")
 
     info("*** Starting network\n")
     net.build()

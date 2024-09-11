@@ -1,0 +1,11 @@
+gym
+torch
+numpy
+scipy
+tqdm
+tensorboard
+msgpack
+msgpack-numpy
+matplotlib
+pickle5
+dill
