@@ -48,7 +48,7 @@ pip -r install requirements.txt
 sudo python3 simulation.py
 ```
 
-(reminder: this repository does not include dataset, and have to adjust path first)
+(reminder: this repository does not include dataset. Require to adjust path to run the code.)
 
 #### Analyze the result:
 
