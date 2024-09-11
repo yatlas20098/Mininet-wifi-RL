@@ -48,7 +48,7 @@ pip -r install requirements.txt
 sudo python3 simulation.py
 ```
 
-(reminder: this repository does not include dataset, and have to adjust path first)
+(reminder: this repository does not include dataset. Require to adjust path to run the code.)
 
 #### Analyze the result:
 
@@ -82,7 +82,7 @@ net = Mininet_wifi(controller=Controller, link=wmediumd,wmediumd_mode=interferen
 
 Set up accesspoint:
 
-mode=g is WIFI 802.11g, and set position at 50,50,0
+mode=g means WIFI 802.11g, and set position at 50,50,0
 
 ```
 ap23 = net.addAccessPoint('ap23', ssid='new-ssid', mode='g', channel='5', position='50,50,0')
