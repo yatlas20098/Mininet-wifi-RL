@@ -141,22 +141,20 @@ Different Cluster contain different configuration of node, you can choose based 
 ![image-20240911023320253](https://github.com/user-attachments/assets/e5565493-d773-4172-9a1a-86e19d1e4159)
 
 
-
-
-
 After we reserve a node, and our reservation is start, we can start to create a experiments:
 
 Profile is used to preload dataset, and version of OS. The Small-lan:38 is the default set up, which will give you a plain node.
 
-![image-20240911023744001](C:\Users\tanle\AppData\Roaming\Typora\typora-user-images\image-20240911023744001.png)
+![image-20240911023744001](https://github.com/user-attachments/assets/26f88cec-2288-4be9-980e-c5d2309aa16d)
+
 
 Next, you can select the OS image you want, and choose the node type(the node you reserve). Since the disk space under user is very small, I suggest to check box **Temp Filesystem Max Space**. It will give you a lot of space under /mydata.
 
-![image-20240911023919053](C:\Users\tanle\AppData\Roaming\Typora\typora-user-images\image-20240911023919053.png)
+![image-20240911023919053](https://github.com/user-attachments/assets/6234b244-ab00-45fe-84ad-a888237b2d51)
 
 The last step is choose the start time. If you do not choose, your machine will be start immediately. For the first use machine, the experiment can only use for 16 hours, but you can extend twice before expire.
 
-![image-20240911024211526](C:\Users\tanle\AppData\Roaming\Typora\typora-user-images\image-20240911024211526.png)
+![image-20240911024211526](https://github.com/user-attachments/assets/6b50cfba-534b-499f-bbeb-8e8cf451f7ec)
 
 Once you start the experiment, you can use the node you reserve.
 
@@ -164,8 +162,9 @@ This is the portal for your experiment. What we have to do is to use the link un
 
  the Extend button can extend experiment for at least 14 days.
 
-![image-20240911024400389](C:\Users\tanle\AppData\Roaming\Typora\typora-user-images\image-20240911024400389.png)
+![image-20240911024400389](https://github.com/user-attachments/assets/89e39614-5bc3-4683-b186-33be53a42385)
 
 Under Topology View, we can choose to restart the node or reload the node.
 
-![image-20240911024747633](C:\Users\tanle\AppData\Roaming\Typora\typora-user-images\image-20240911024747633.png)
+![image-20240911024747633](https://github.com/user-attachments/assets/9959eaf3-f40e-473a-b7cc-ffd2e5ee4a75)
+
