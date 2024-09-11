@@ -138,8 +138,9 @@ To get access of Cloudlab node, the first step is to put SSH key of your local m
 Then we have to reserve a node: Click Experiments in the top right, and then click Reserve Node.
 
 Different Cluster contain different configuration of node, you can choose based on availability and requirements. (For this experiment, what I usually use is c240g5 under Wisconsin Cluster).
+![image-20240911023320253](https://github.com/user-attachments/assets/e5565493-d773-4172-9a1a-86e19d1e4159)
 
-![image-20240911023320253](C:\Users\tanle\AppData\Roaming\Typora\typora-user-images\image-20240911023320253.png)
+
 
 
 
