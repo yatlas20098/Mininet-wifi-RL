@@ -48,7 +48,7 @@ pip install -r requirements.txt
 sudo -E python3 simulation.py
 ```
 
-#### Clean mininet if the program did not exit regularly before re-running (crashed or terminated):
+#### Clean mininet if the program did not exit regularly (crashed or terminated):
 ```
 sudo mn -c
 ```
