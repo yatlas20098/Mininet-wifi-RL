@@ -39,13 +39,18 @@ $ sudo util/install.sh -Wlnfv
 #### Install RL:
 
 ```
-pip -r install requirements.txt
+pip install -r requirements.txt
 ```
 
 #### Run the code:
 
 ```
-sudo python3 simulation.py
+sudo -E python3 simulation.py
+```
+
+#### Clean mininet if the program did not exit regularly before re-running (crashed or terminated):
+```
+sudo mn -c
 ```
 
 (reminder: this repository does not include dataset. Require to adjust path to run the code.)
