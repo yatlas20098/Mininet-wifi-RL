@@ -14,8 +14,8 @@ from mn_wifi.wmediumdConnector import interference
 from RL_agent import WSNEnvironment, WSNEnvironmentAgent
 
 f = 10  # Number of sensors
-log_directory = "/mydata/mydata/RL_agent/output"
-dataset_directory = "/mydata/mydata/actuallyuse/towerdataset"
+log_directory = "data/log"
+dataset_directory = "data/towerdataset"
 
 
 if not os.path.exists(dataset_directory):
@@ -34,7 +34,6 @@ print(f"Created rate files for {f} sensors in {log_directory}")
 
 #size for each chunk
 chunk_size = 5000
-
 
 def check_received_data(base_output_file, num_sensors, min_lines=10):
     #To run the RL agent, we need to receive at least 10 line in cluster head.
@@ -71,7 +70,7 @@ def send_messages(sensor, ch_ip, sensor_id):
 
     chunks = datasets[sensor_id]
     info(f"chunk size {len(chunks)}\n")
-    rate_file = f'/mydata/mydata/RL_agent/output/sensor_{sensor_id}_rate.txt'
+    rate_file = f'{log_directory}/sensor_{sensor_id}_rate.txt'
     if not chunks:
         info(f"Sensor {sensor_id}: No data available. Skipping send_messages.\n")
         return
@@ -154,7 +153,8 @@ def receive_messages(node):
         #save the data that receive from different sensor to different file
         output_file = f'{base_output_file}_{i}.txt'
         node.cmd(f'touch {output_file}')
-        node.cmd(f'while true; do nc -ul -p {5001 + i} >> {output_file} & done &')
+        #node.cmd(f'while true; do nc -ul -p {5001 + i} >> {output_file} & done &')
+        node.cmd(f'nc -ul -k -p {5001 + i} >> {output_file} &')
         info(f"Receiver: Started listening on port {5001 + i} for sensor {i}\n")
     #capture the network by pcap
     pcap_file = f'{log_directory}/capture.pcap'
@@ -180,7 +180,7 @@ def rl_agent_process(env, agent, sensors, cluster_head):
         
         for i, rate in enumerate(new_rates):
             #save the rate that decide by RL_agent to file, 1 means stop, 2 means 2 packet per second, 3 means 1 packet per second 
-            rate_file = f'/mydata/mydata/RL_agent/output/sensor_{i}_rate.txt'
+            rate_file = f'{log_directory}/sensor_{i}_rate.txt'
             with open(rate_file, 'w') as file:
                 if rate == 1:
                     file.write(str(0))
@@ -287,7 +287,6 @@ def topology(args):
             epsilon_decay=epsilon_decay,
             final_epsilon=final_epsilon,
         )
-
     
         print("Training the RL agent...")
         train_agent(env, agent)
@@ -309,9 +308,9 @@ def topology(args):
     
         for sensor in sensors:
             sensor.cmd('pkill tcpdump')
+        cluster_head.cmd('pkill nc')
     except Exception as e:
         info(f"*** Error occurred during communication: {str(e)}\n")
-        
         
 
     info("*** Running CLI\n")
