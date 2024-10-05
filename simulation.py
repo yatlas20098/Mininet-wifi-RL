@@ -11,12 +11,46 @@ from mn_wifi.net import Mininet_wifi
 from mn_wifi.cli import CLI
 from mn_wifi.link import wmediumd
 from mn_wifi.wmediumdConnector import interference
-from RL_agent import WSNEnvironment, WSNEnvironmentAgent
+#from RL_agent import WSNEnvironment, WSNEnvironmentAgent
+from d_agent import IoBTEnv
 
-f = 10  # Number of sensors
+import tensorflow as tf
+
+from tf_agents.agents.dqn import dqn_agent
+from tf_agents.drivers import py_driver
+from tf_agents.environments import suite_gym
+from tf_agents.environments import tf_py_environment
+from tf_agents.eval import metric_utils
+from tf_agents.metrics import tf_metrics
+from tf_agents.networks import sequential
+from tf_agents.policies import py_tf_eager_policy
+from tf_agents.policies import random_tf_policy
+from tf_agents.replay_buffers import reverb_replay_buffer
+from tf_agents.replay_buffers import reverb_utils
+from tf_agents.trajectories import trajectory
+from tf_agents.specs import tensor_spec
+from tf_agents.utils import common
+
+# Number of sensors
+f = 10 
+#Size of each chunk
+chunk_size = 5000
 log_directory = "data/log"
 dataset_directory = "data/towerdataset"
 
+# DQN Hyperparameters
+num_iterations = 20000 # @param {type:"integer"}
+
+initial_collect_steps = 100  # @param {type:"integer"}
+collect_steps_per_iteration =   1# @param {type:"integer"}
+replay_buffer_max_length = 100000  # @param {type:"integer"}
+
+batch_size = 64  # @param {type:"integer"}
+learning_rate = 1e-3  # @param {type:"number"}
+log_interval = 200  # @param {type:"integer"}
+
+num_eval_episodes = 10  # @param {type:"integer"}
+eval_interval = 1000  # @param {type:"integer"}
 
 if not os.path.exists(dataset_directory):
     os.makedirs(dataset_directory)
@@ -24,7 +58,7 @@ if not os.path.exists(dataset_directory):
 if not os.path.exists(log_directory):
     os.makedirs(log_directory)
 
-# Due to limitation of thread control in Mininet-Wifi, so I use a rate file to represent the change in rate that send by cluster
+# Use a rate file to represent changes in the rate assigned by the cluster head (neccessary due to a limitation of thread control in Mininet-Wifi)
 for sensor_id in range(f):
     rate_file = f'{log_directory}/sensor_{sensor_id}_rate.txt'
     with open(rate_file, 'w') as file:
@@ -32,7 +66,7 @@ for sensor_id in range(f):
 
 print(f"Created rate files for {f} sensors in {log_directory}")    
 
-#size for each chunk
+#Size of each chunk
 chunk_size = 5000
 
 def check_received_data(base_output_file, num_sensors, min_lines=10):
@@ -50,12 +84,11 @@ def preprocess_dataset_into_chunks(dataset_path, chunk_size):
     # cache the dataset into memory first
     with open(dataset_path, 'r') as file:
         lines = file.readlines()
-    # chunks = [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
-    # return chunks + chunks
+    
     return [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
 
+# Each sensor has an associated dataset
 datasets = {}
-    # Each sensor will be stored different dataset
 for i in range(f):
     tower_number = i + 2  # Start from tower2 to tower11
     file_path = f'{dataset_directory}/tower{tower_number}Data_processed.csv'
@@ -65,11 +98,10 @@ for i in range(f):
         print(f"Warning: Dataset file not found for sensor {i}: {file_path}")
         datasets[i] = []
         
+#function used to send message from sensor to cluster head
 def send_messages(sensor, ch_ip, sensor_id):
-    #function used to send message from sensor to cluster head
-
     chunks = datasets[sensor_id]
-    info(f"chunk size {len(chunks)}\n")
+    info(f"Chunk size: {len(chunks)}\n")
     rate_file = f'{log_directory}/sensor_{sensor_id}_rate.txt'
     if not chunks:
         info(f"Sensor {sensor_id}: No data available. Skipping send_messages.\n")
@@ -83,7 +115,7 @@ def send_messages(sensor, ch_ip, sensor_id):
         packet_data = ''.join(chunk)
         packet_size_kb = len(packet_data) / 1024.0
         
-        #read rate from file to reflect rate change
+        # read updated rate from file 
         with open(rate_file, 'r') as file:
             rate = float(file.read().strip())
         
@@ -109,8 +141,6 @@ def send_messages(sensor, ch_ip, sensor_id):
     info(f"Sensor {sensor_id}: Finished sending messages\n")
 
 def train_agent(env, agent, n_episodes=1000):
-    #train the model
-    
     episodes = 20
     for episode in tqdm(range(n_episodes)):
         obs, env_info = env.reset()
@@ -164,7 +194,76 @@ def receive_messages(node):
     while True:
         time.sleep(1)
 
+def deep_q(env, agent, sensors, cluster_head):
+    agent = Sequential()
+    agent.add(Flatten(input_shape = (1, ) + env.observation_space.shape))
+    agent.add(Dense(16))
+    agent.add(Activation('relu'))
+    agent.add(Dense(num_actions))
+    agent.add(Activation('linear'))
+
+    strategy = EpsGreedyQPolicy()
+    memory = SequentialMemory(limit = 10000, window_length = 1)
+    dqn = DQNAgent(model=agent, nb_actions=num_actions, memory=memory, nb_steps_warmup=10, target_model_update = 1e-2, policy=strategy)
+    dqn.compile(Adam(r=1e-3), metric=['mae'])
+
+
 def rl_agent_process(env, agent, sensors, cluster_head):
+    step = 0
+    training_interval = 300 # Train every 300 steps
+    training_episodes = 20
+    total_return = 0.0
+
+    for _ in range(training_episodes):
+        time.sleep(5) # Update every 5 seconds
+
+        time_step = env.reset()
+        epsiode_return = 0.0
+
+        while not time_step.is_last():
+            action_step = policy_action(time_step)
+            time_step = environment.step(action_step.action)
+            episode_return += time_step.reward
+
+            # Convert rates from 0-2 to 1-3 range
+            new_rates = [rate + 1 for rate in action_step.action]
+            info(f'Cluster Head: New Rates: {new_rates}')
+
+            for i, rate in enumerate(new_rates):
+                """
+                Save the rate decided by the RL_agent to a file
+                1 - stop
+                2 - 2 packets/second
+                3 - 1 packlet/second
+                """
+
+                rate_file = f'{log_directory}/sensor_{i}_rate.txt'
+                with open(rate_file, 'w') as file:
+                    if rate == 1:
+                        file.write(str(0))
+                    elif rate == 2:
+                        file.write(str(2))
+                    elif rate == 3:
+                        file.write(str(1))
+
+            sensor_ip = sensors[i].params['ip'].split('/')[0]
+            cluster_head.cmd(f'echo "{rate}" | nc -q 1 -u {sensor_ip} 6001')
+
+        time.sleep(5)
+
+        if step % training_interval == 0:
+            print(f"Starting training at step {step}")
+            #train_agent(env, agent)
+            print(f"Finished training at step {step}")
+            
+        if step % 100 == 0:
+            #agent.save_q_table('q_table.pkl')
+            #agent.decay_epsilon()
+            print(f"Step {step}: Saved Q-table and decayed epsilon to {agent.epsilon}")
+        step += 1
+
+
+    """
     #RL agent make decision on rate for each sensor based on their similarity
     step = 0
     training_interval = 300  # Train every 300 steps
@@ -203,12 +302,16 @@ def rl_agent_process(env, agent, sensors, cluster_head):
             agent.decay_epsilon()
             print(f"Step {step}: Saved Q-table and decayed epsilon to {agent.epsilon}")
         step += 1
+    """
 
 def stop_receivers(node):
     #stop receiver
     node.cmd('pkill -f "nc -ul"')
     node.cmd('pkill tcpdump')
     info("Stopped all nc receivers and tcpdump\n")
+
+def dense_layer(num_units):
+            return tf.keras.layers.Dense(num_units, activation=tf.keras.activations.relu, kernel_initializer=tf.keras.initializers.VarianceScaling(scale=2.0, mode='fan_in', distribution='truncated_normal'))
 
 def topology(args):
     #build network
@@ -245,12 +348,12 @@ def topology(args):
     try:
         info("*** Starting receivers\n")
         
-        #let cluster starter to listen to all the sensor
+        # Activate cluster head listining threads
         receive_thread = threading.Thread(target=receive_messages, args=(cluster_head,))
         receive_thread.start()
         
-        time.sleep(2)  # Give receivers time to start
-
+        # Give listining threads time to start
+        time.sleep(2) 
 
         info("*** Starting senders\n")
         sender_threads = []
@@ -264,16 +367,14 @@ def topology(args):
             thread.start()
             sender_threads.append(thread)
             
-            # listener_thread = threading.Thread(target=continuous_rate_listener, args=(sensor, i))
-            # listener_thread.daemon = True
-            # listener_thread.start()
-            # listener_threads.append(listener_thread)
-            
         print("Waiting for initial data before starting RL agent")
         while not check_received_data(f'{log_directory}/ch_received_from_sensor', f):
             time.sleep(5)
+
         print("Sufficient data received. Starting RL agent.")
         info("*** Starting RL agent\n")
+
+        """
         env = WSNEnvironment(num_sensors=f)
         learning_rate = 0.01
         n_episodes = 10000
@@ -287,9 +388,45 @@ def topology(args):
             epsilon_decay=epsilon_decay,
             final_epsilon=final_epsilon,
         )
-    
+        """
+        env = IoBTEnv()
+
+        train_env = tf_py_environment.TFPyEnvironment(env)
+        #eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
+
+        fc_layer_params = (100, 50)
+        action_tensor_spec = tensor_spec.from_spec(env.action_spec())
+        num_actions = action_tensor_spec.maximum - action_tensor_spec.minimum + 1
+
+        """
+        QNetwork consists of a sequence of Dense layers followed by a dense layer with `num_actions` units to generate one q_value per available action as its output.
+        """
+
+        dense_layers = [dense_layer(num_units) for num_units in fc_layer_params]
+        q_values_layer = tf.keras.layers.Dense(
+                num_actions,
+                activation=None,
+                kernel_initializer=tf.keras.initializers.RandomUniform(minval=-0.03, maxval=0.03),
+                bias_initializer=tf.keras.initializers.Constant(-0.2))
+        q_net = sequential.Sequential(dense_layers + [q_values_layer])
+
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+
+        train_step_counter = tf.Variable(0)
+
+        agent = dqn_agent.DqnAgent(
+            train_env.time_step_spec(),
+            train_env.action_spec(),
+            q_network=q_net,
+            optimizer=optimizer,
+            td_errors_loss_fn=common.element_wise_squared_loss,
+            train_step_counter=train_step_counter)
+
+        agent.initialize()
+
+        
         print("Training the RL agent...")
-        train_agent(env, agent)
+        train_agent(train_env, agent)
         # else:
         #     print("Loading pre-trained RL agent...")
         #     agent.load_q_table('q_table.pkl')
@@ -308,7 +445,7 @@ def topology(args):
     
         for sensor in sensors:
             sensor.cmd('pkill tcpdump')
-        cluster_head.cmd('pkill nc')
+        #cluster_head.cmd('pkill nc')
     except Exception as e:
         info(f"*** Error occurred during communication: {str(e)}\n")
         
