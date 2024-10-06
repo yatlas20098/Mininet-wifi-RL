@@ -30,6 +30,7 @@ from tf_agents.replay_buffers import reverb_utils
 from tf_agents.trajectories import trajectory
 from tf_agents.specs import tensor_spec
 from tf_agents.utils import common
+from tf_agents.environments import utils
 
 # Number of sensors
 f = 10 
@@ -206,7 +207,6 @@ def deep_q(env, agent, sensors, cluster_head):
     memory = SequentialMemory(limit = 10000, window_length = 1)
     dqn = DQNAgent(model=agent, nb_actions=num_actions, memory=memory, nb_steps_warmup=10, target_model_update = 1e-2, policy=strategy)
     dqn.compile(Adam(r=1e-3), metric=['mae'])
-
 
 def rl_agent_process(env, agent, sensors, cluster_head):
     step = 0
@@ -390,9 +390,11 @@ def topology(args):
         )
         """
         env = IoBTEnv()
+        utils.validate_py_environment(env, episodes=5)
 
         train_env = tf_py_environment.TFPyEnvironment(env)
         #eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
+        exit(-1)
 
         fc_layer_params = (100, 50)
         action_tensor_spec = tensor_spec.from_spec(env.action_spec())
@@ -401,19 +403,23 @@ def topology(args):
         """
         QNetwork consists of a sequence of Dense layers followed by a dense layer with `num_actions` units to generate one q_value per available action as its output.
         """
-
+        
+        input_shape = (f, f)
+        flatten_layer = tf.keras.layers.Flatten(input_shape=input_shape)
         dense_layers = [dense_layer(num_units) for num_units in fc_layer_params]
         q_values_layer = tf.keras.layers.Dense(
                 num_actions,
                 activation=None,
                 kernel_initializer=tf.keras.initializers.RandomUniform(minval=-0.03, maxval=0.03),
                 bias_initializer=tf.keras.initializers.Constant(-0.2))
-        q_net = sequential.Sequential(dense_layers + [q_values_layer])
+        q_net = sequential.Sequential([flatten_layer] + dense_layers + [q_values_layer])
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
         train_step_counter = tf.Variable(0)
 
+        print(train_env.time_step_spec())
+        print('Action space: ', train_env.action_spec())
+        print(f'Creating agent')
         agent = dqn_agent.DqnAgent(
             train_env.time_step_spec(),
             train_env.action_spec(),
@@ -422,6 +428,7 @@ def topology(args):
             td_errors_loss_fn=common.element_wise_squared_loss,
             train_step_counter=train_step_counter)
 
+        print(f'Initalizing agent')
         agent.initialize()
 
         

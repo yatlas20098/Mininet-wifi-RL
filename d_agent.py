@@ -5,7 +5,7 @@ from tf_agents.environments import py_environment
 from tf_agents.environments import tf_environment
 from tf_agents.environments import tf_py_environment
 from tf_agents.environments import utils
-from tf_agents.specs import array_spec
+from tf_agents.specs import array_spec, BoundedArraySpec, ArraySpec
 from tf_agents.environments import wrappers
 from tf_agents.environments import suite_gym
 from tf_agents.trajectories import time_step as ts
@@ -65,6 +65,8 @@ class IoBTEnv(py_environment.PyEnvironment):
             if os.path.exists(file_path):
                 sensor_data = read_temperature_data(file_path)
                 temperature_data.append(sensor_data)
+                # TODO: Safley clear file
+                #open(file_path, 'w').close()
             else:
                 print(f"Warning: Temperature data file not found: {file_path}")
 
@@ -95,11 +97,19 @@ class IoBTEnv(py_environment.PyEnvironment):
         self.beta=0.3
         self.sampling_freq = sampling_freq
 
-        self._state = []
+        #self._state = []
         self._epsiode_ended = False
 
         # Load the temperature data
         self.temperature = self._load_temperature_data(log_directory)
+        self.similarity = np.zeros((num_sensors, num_sensors))
+        print("Observation shape: ", self.similarity.shape)
+        
+        data_len = len(self.temperature[0])
+        # Calculate similarity at time 0
+        for i in range(len(self.temperature)):
+            for j in range(i + 1, len(self.temperature)):
+                self.similarity[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
 
         # Internal state variables
         self.step_count = 0
@@ -112,19 +122,18 @@ class IoBTEnv(py_environment.PyEnvironment):
 
         # Number of generated events
         self.generated_events = 0
-        self.similarity=0
+        #self.similarity=0
         self.similarity_penalty=0
-
         
         # Initialize the environment
-        self.sensor_information, self.num_points = self._generate_sensor_positions(self.temperature[:,0])
+        # self.sensor_information, self.num_points = self._generate_sensor_positions(self.temperature[:,0])
 
         """
         Define the observation space
 
-        The observation space is a matrix with rows as sensors and columns as sensor data 
+        The observation space is a matrix with rows as sensors and columns as sensor data (temperature) 
         """
-        self._observation_spec = array_spec.BoundedArraySpec(shape=(self.num_points, 3,), dtype=np.float32, minimum=0, maximum=1000, name='observation')
+        self._observation_spec = array_spec.BoundedArraySpec(shape=(self.num_sensors, self.num_sensors), dtype=np.float32, minimum=0, maximum=1000, name='observation')
         #self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_points, 3), dtype=np.float32)
 
         """
@@ -149,13 +158,14 @@ class IoBTEnv(py_environment.PyEnvironment):
         self.generated_events = 0
         self.info = {'captured': 0, 'non-captured': 0}
 
-        for i in range(self.num_points):
-            self.info['sensor '+str(i)] = set()
+        #for i in range(self.num_points):
+        #    self.info['sensor '+str(i)] = set()
             # initialize the energy and tempreture
             # self.sensor_information[i,1] = self.remaining_energy[i]
-            self.sensor_information[i,0] = self.temperature[i,0]
-        return self.sensor_information, self.info
+            #self.sensor_information[i,0] = self.temperature[i,0]
+        return ts.restart(tf.convert_to_tensor(self.similarity, dtype=tf.float32))
 
+        #return self.sensor_information, self.info
         #return ts.restart(np.array([self._state], dtype=np.int32))
 
     def _step(self, action):
@@ -163,32 +173,48 @@ class IoBTEnv(py_environment.PyEnvironment):
 
         if self.step_count > self.max_steps:
             self._epsiode_ended = True
-            return ts.termination(np.array([self._state], dtype=np.float32), reward)
+            return ts.termination(tf.convert_to_tensor(self.similarity, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount = 0.0)
+        
+        # TODO: Multi Threading file writing issue bound to happen; lock files before clearing
+        self.temperature = self._load_temperature_data(log_directory)
+        data_len = len(self.temperature[0])
 
+        for i in range(len(self.temperature)):
+            for j in range(i + 1, len(self.temperature)):
+                self.similarity[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
+                print(f"Similarity between sensor {i} and sensor {j}: {self.similarity[i][j]}")
+
+                # Penalize pairs with high similarity and high frequency rates
+                self.similarity_penalty += self.similarity[i][j] * (action[i] + action[j])
+        """
         for i in range(len(self.sensor_information)):
             for j in range(i + 1, len(self.sensor_information)):
-                self.similarity = rmse(self.sensor_information[i,0], self.sensor_information[j,0])
+                self.similarity[i][j] = np.linalg.norm(self.sensor_information[i,0] - self.sensor_information[j,0], ord = 2) / len(self.sensor_information[i,0])
                 print(f"Similarity between sensor {i} and sensor {j}: {self.similarity}")
 
                 # Penalize pairs with high similarity and high frequency rates
-                self.similarity_penalty += self.similarity * (action[i] + action[j])
+                self.similarity_penalty += self.similarity[i][j] * (action[i] + action[j])
+        """
 
-        self.similarity_penalty /= (len(self.sensor_information) * (len(self.sensor_information) - 1) / 2)
+        #self.similarity_penalty /= (len(self.sensor_information) * (len(self.sensor_information) - 1) / 2)
+        self.similarity_penalty /= (len(self.temperature) * (len(self.temperature) - 1) / 2)
 
         ### Calculate energy efficiency
         # Utility combines penalties for redundancy and rewards for high average energy
         reward = -self.alpha * (self.similarity_penalty)
 
+        """
         for i in range(len(self.sensor_information)):
             # self.sensor_information[i,0] = self.temprature[i,self.step_count+1]
             if self.step_count + 1 < self.temprature.shape[1]:
                 self.sensor_information[i,0] = self.temprature[i, self.step_count + 1]
-        
+        """
+
         self.step_count += 1
 
         #return self.sensor_information, reward, self.epsiode_ended, self.info
         return ts.transition(
-                np.array([self._state], dtype=np.float32), reward=reward, discount=1.0)
+                tf.convert_to_tensor(self.similarity, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=1.0)
 
     def _generate_sensor_positions(self,temp):
         # Set a fixed random seed for reproducibility
@@ -201,9 +227,9 @@ class IoBTEnv(py_environment.PyEnvironment):
         num_points = 10
 
         # Generate the sensor positions uniformly at random within the space
-        sensor_information = np.zeros((num_points, 1))
+        #sensor_information = np.zeros((num_points, 1))
 
-        sensor_information[:, 0] = temp[0]
+        #sensor_information[:, 0] = temp[0]
 
         # Fill the second column with 100
         # sensor_information[:, 1] = energy
