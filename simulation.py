@@ -389,7 +389,7 @@ def topology(args):
             final_epsilon=final_epsilon,
         )
         """
-        env = IoBTEnv()
+        env = IoBTEnv(rate_file_dir=log_directory)
         utils.validate_py_environment(env, episodes=1)
 
         train_env = tf_py_environment.TFPyEnvironment(env)

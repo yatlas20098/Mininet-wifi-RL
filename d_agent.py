@@ -85,7 +85,7 @@ class IoBTEnv(py_environment.PyEnvironment):
 
         return result
 
-    def __init__(self, num_sensors=10, sensor_coverage=0.4, sampling_freq=2, max_steps=50, threshold_prob=0.3):
+    def __init__(self, rate_file_dir, num_sensors=10, sensor_coverage=0.4, sampling_freq=2, max_steps=50, threshold_prob=0.3):
         # Environment parameters
         self.num_sensors = num_sensors
         self.sensor_coverage = sensor_coverage
@@ -99,14 +99,15 @@ class IoBTEnv(py_environment.PyEnvironment):
 
         # Load the temperature data
         self.temperature = self._load_temperature_data(log_directory)
-        self.similarity = np.zeros((num_sensors, num_sensors))
-        print("Observation shape: ", self.similarity.shape)
+        self._state = np.zeros((num_sensors, num_sensors))
+        print("Observation shape: ", self._state.shape)
         
         data_len = len(self.temperature[0])
         # Calculate similarity at time 0
+
         for i in range(len(self.temperature)):
             for j in range(i + 1, len(self.temperature)):
-                self.similarity[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
+                self._state[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
 
         # Internal state variables
         self.step_count = 0
@@ -137,14 +138,23 @@ class IoBTEnv(py_environment.PyEnvironment):
         
         At each step a sensor can be assigned a frequency of 0, 1, or 2
         """
-        self._action_spec = array_spec.BoundedArraySpec(shape=(), dtype=np.float32, minimum=0, name='action')
-
+        self._action_spec = array_spec.BoundedArraySpec(shape=(num_sensors,), dtype=np.int32, minimum=0, maximum = 2, name='action')
+        
         self._time_step_spec = TimeStep(
-            step_type=ArraySpec(shape=(), dtype=tf.int32, name='step_type'),
-            reward=ArraySpec(shape=(), dtype=tf.float32, name='reward'),
-            discount=BoundedArraySpec(shape=(), dtype=tf.float32, name='discount', minimum=0.0, maximum=1.0),
-            observation=BoundedArraySpec(shape=(10, 10), dtype=tf.float32, name='observation', minimum=0.0, maximum=1000.0)
+            step_type=ArraySpec(shape=(), dtype=np.int32, name='step_type'),
+            reward=ArraySpec(shape=(), dtype=np.float32, name='reward'),
+            discount=BoundedArraySpec(shape=(), dtype=np.float32, name='discount', minimum=0.0, maximum=1.0),
+            observation=BoundedArraySpec(shape=(self.num_sensors, self.num_sensors), dtype=np.float32, name='observation', minimum=0.0, maximum=1000000.0)
         )
+
+        """
+        self._time_step_spec = TimeStep(
+            step_type=ArraySpec(shape=(), dtype=np.int32, name='step_type'),
+            reward=ArraySpec(shape=(), dtype=np.float32, name='reward'),
+            discount=BoundedArraySpec(shape=(), dtype=np.float32, name='discount', minimum=0.0, maximum=1.0),
+            observation=BoundedArraySpec(shape=(10, 10), dtype=np.float32, name='observation', minimum=0.0, maximum=1000.0)
+        )
+        """
        
     def time_step_spec(self):
         return self._time_step_spec
@@ -156,21 +166,20 @@ class IoBTEnv(py_environment.PyEnvironment):
         return self._observation_spec
 
     def _reset(self):
-        self._state = 0
         self._episode_ended = False
 
         self.step_count = 0
         self.generated_events = 0
         self.info = {'captured': 0, 'non-captured': 0}
 
-        return ts.restart(tf.convert_to_tensor(self.similarity, dtype=tf.float32))
+        return ts.restart(tf.convert_to_tensor(self._state, dtype=tf.float32))
 
     def _step(self, action):
         reward = 0
 
         if self.step_count > self.max_steps:
             self._epsiode_ended = True
-            return ts.termination(tf.convert_to_tensor(self.similarity, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constart(0.0, dtype=tf.float32))
+            return ts.termination(tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constart(0.0, dtype=tf.float32))
         
         # TODO: Multi Threading file writing issue bound to happen; lock files before clearing
         self.temperature = self._load_temperature_data(log_directory)
@@ -178,11 +187,12 @@ class IoBTEnv(py_environment.PyEnvironment):
 
         for i in range(len(self.temperature)):
             for j in range(i + 1, len(self.temperature)):
-                self.similarity[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
+                self._state[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
                 print(f"Similarity between sensor {i} and sensor {j}: {self.similarity[i][j]}")
 
                 # Penalize pairs with high similarity and high frequency rates
-                self.similarity_penalty += self.similarity[i][j] * (action[i] + action[j])
+                self.similarity_penalty += self._state[i][j] * (action[i] + action[j])
+
         """
         for i in range(len(self.sensor_information)):
             for j in range(i + 1, len(self.sensor_information)):
@@ -210,7 +220,7 @@ class IoBTEnv(py_environment.PyEnvironment):
 
         #return self.sensor_information, reward, self.epsiode_ended, self.info
         return ts.transition(
-                tf.convert_to_tensor(self.similarity, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constant(1.0, dtype=tf.float32))
+                tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constant(1.0, dtype=tf.float32))
 
     def _generate_sensor_positions(self,temp):
         # Set a fixed random seed for reproducibility
