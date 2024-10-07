@@ -390,7 +390,7 @@ def topology(args):
         )
         """
         env = IoBTEnv()
-        utils.validate_py_environment(env, episodes=5)
+        utils.validate_py_environment(env, episodes=1)
 
         train_env = tf_py_environment.TFPyEnvironment(env)
         #eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)

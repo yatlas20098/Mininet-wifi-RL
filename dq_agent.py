@@ -16,6 +16,15 @@ from msgpack_numpy import patch as msgpack_numpy_patch
 msgpack_numpy_patch()
 import pickle
 import dill
+
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import Dense, Activation, Flatten
+from keras.optimizers import Adam
+from rl.agents.dqn import DQNAgent
+from rl.policy import EpsGreedyQPolicy
+from rl.memory import SequentialMemory
+
 SAMPLING_FREQ = [1,2,3]
 # TOTAL_ENERGY = 100
 log_directory = "data/log"
@@ -51,7 +60,6 @@ def read_temperature_data(file_path):
     return np.array(data)
 
 class WSNEnvironment(gym.Env):
-
     metadata = {"render_modes": ["console"]}
     # def _load_temperature_data(self, data_directory):
     #     temperature_data = []
@@ -197,6 +205,7 @@ class WSNEnvironment(gym.Env):
         # Return the next observation, reward, termination signal, and additional information
         return self.sensor_information, reward, terminated, truncated, self.info
 
+    # TODO: Does this generate positions or initalize sensors with their temps? 
     def _generate_sensor_positions(self,temp):
         # Set a fixed random seed for reproducibility
         np.random.seed(42)
