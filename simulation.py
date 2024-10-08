@@ -11,6 +11,7 @@ from mn_wifi.net import Mininet_wifi
 from mn_wifi.cli import CLI
 from mn_wifi.link import wmediumd
 from mn_wifi.wmediumdConnector import interference
+import numpy as np
 #from RL_agent import WSNEnvironment, WSNEnvironmentAgent
 from d_agent import IoBTEnv
 
@@ -313,6 +314,21 @@ def stop_receivers(node):
 def dense_layer(num_units):
             return tf.keras.layers.Dense(num_units, activation=tf.keras.activations.relu, kernel_initializer=tf.keras.initializers.VarianceScaling(scale=2.0, mode='fan_in', distribution='truncated_normal'))
 
+def compute_avg_return(env, policy, num_episodes):
+    total_return = 0.0
+    for _ in range(num_episodes):
+        time_step = env.reset()
+        episode_return = 0.0
+
+        while not time_step.is_last():
+            action_step = policy.action(time_step)
+            time_step = env.step(action_step.action)
+            episode_return += time_step.reward
+        total_return += epsiode_return
+
+    return total_return / num_episodes
+
+
 def topology(args):
     #build network
     net = Mininet_wifi(controller=Controller, link=wmediumd,
@@ -389,13 +405,19 @@ def topology(args):
             final_epsilon=final_epsilon,
         )
         """
+
+        n_episodes = 10
         env = IoBTEnv(rate_file_dir=log_directory)
-        utils.validate_py_environment(env, episodes=1)
+        print('action_spec:', env.action_spec())
+        print('time_step_spec.observation:', env.time_step_spec().observation)
+        print('time_step_spec.step_type:', env.time_step_spec().step_type)
+        print('time_step_spec.discount:', env.time_step_spec().discount)
+        print('time_step_spec.reward:', env.time_step_spec().reward)
+
+        # TODO: Validation fails. Fix?
+        #utils.validate_py_environment(env, episodes=1)
 
         train_env = tf_py_environment.TFPyEnvironment(env)
-        #eval_env = tf_py_environment.TFPyEnvironment(eval_py_env)
-        exit(-1)
-
         fc_layer_params = (100, 50)
         action_tensor_spec = tensor_spec.from_spec(env.action_spec())
         num_actions = action_tensor_spec.maximum - action_tensor_spec.minimum + 1
@@ -431,9 +453,10 @@ def topology(args):
         print(f'Initalizing agent')
         agent.initialize()
 
-        
+        avg_return = compute_avg_return(env, tf_agents.policies.random_tf_policy.RandomTFPolicy(train_enc.time_step_spec(), train_env.action_spec(), 10)
+        print("Average untrained return = ", avg_return)
         print("Training the RL agent...")
-        train_agent(train_env, agent)
+        #train_agent(train_env, agent)
         # else:
         #     print("Loading pre-trained RL agent...")
         #     agent.load_q_table('q_table.pkl')

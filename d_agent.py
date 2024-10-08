@@ -60,7 +60,7 @@ class IoBTEnv(py_environment.PyEnvironment):
     def _load_temperature_data(self, data_directory):
         temperature_data = []
 
-        for i in range(self.num_sensors):
+        for i in range(self._num_sensors):
             file_path = os.path.join(data_directory, f'ch_received_from_sensor_{i}.txt')
             if os.path.exists(file_path):
                 sensor_data = read_temperature_data(file_path)
@@ -84,67 +84,70 @@ class IoBTEnv(py_environment.PyEnvironment):
         print(f"Final temperature data shape: {result.shape}")
 
         return result
+    def _update_rates(self, action):
+        for sensor_id in range(self._num_sensors):
+            rate_file = f'{self._rate_file_dir}/sensor_{sensor_id}_rate.txt'
+            with open(rate_file, 'w') as file:
+                rate = action & 3
+                # Invalid Action
+                if rate > 2:
+                    return True 
+                file.write("{rate}")
+                action = action >> 2
+        # Valid Action
+        return False 
 
     def __init__(self, rate_file_dir, num_sensors=10, sensor_coverage=0.4, sampling_freq=2, max_steps=50, threshold_prob=0.3):
         # Environment parameters
-        self.num_sensors = num_sensors
-        self.sensor_coverage = sensor_coverage
-        self.max_steps = max_steps
-        self.threshold_prob = threshold_prob
-        self.alpha=0.6
-        self.beta=0.3
-        self.sampling_freq = sampling_freq
+        self._num_sensors = num_sensors
+        self._sensor_coverage = sensor_coverage
+        self._max_steps = max_steps
+        self._threshold_prob = threshold_prob
+        self._alpha=0.6
+        self._beta=0.3
+        self._sampling_freq = sampling_freq
+        self._rate_file_dir = rate_file_dir
 
         self._epsiode_ended = False
 
         # Load the temperature data
-        self.temperature = self._load_temperature_data(log_directory)
+        self._temperature = self._load_temperature_data(log_directory)
         self._state = np.zeros((num_sensors, num_sensors))
         print("Observation shape: ", self._state.shape)
         
-        data_len = len(self.temperature[0])
+        data_len = len(self._temperature[0])
         # Calculate similarity at time 0
 
-        for i in range(len(self.temperature)):
-            for j in range(i + 1, len(self.temperature)):
-                self._state[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
+        for i in range(len(self._temperature)):
+            for j in range(i + 1, len(self._temperature)):
+                self._state[i][j] = np.linalg.norm(self._temperature[i] - self._temperature[j], ord=2)/data_len
 
-        # Internal state variables
-        self.step_count = 0
-
-        # information dictionary
-        self.info = {}
-
-        # the generated event
-        self.event = None
-
-        # Number of generated events
-        self.generated_events = 0
-        self.similarity_penalty=0
-        
         # Initialize the environment
         # self.sensor_information, self.num_points = self._generate_sensor_positions(self.temperature[:,0])
 
         """
-        Define the observation space
+        Define the observation space:
 
-        The observation space is a matrix with rows as sensors and columns as sensor data (temperature) 
+        a matrix with rows as sensors and columns as sensor data (temperature) 
         """
-        self._observation_spec = array_spec.BoundedArraySpec(shape=(self.num_sensors, self.num_sensors), dtype=np.float32, minimum=0, maximum=1000, name='observation')
+        self._observation_spec = array_spec.BoundedArraySpec(shape=(num_sensors, num_sensors), dtype=np.float32, minimum=0, maximum=1000, name='observation')
         #self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_points, 3), dtype=np.float32)
 
         """
-        Define the action space
+        Define the action space:
         
-        At each step a sensor can be assigned a frequency of 0, 1, or 2
+        An integer where contigious pairs of bits represent the frequency of a sensor (either, 0, 1 or 2).  
         """
-        self._action_spec = array_spec.BoundedArraySpec(shape=(num_sensors,), dtype=np.int32, minimum=0, maximum = 2, name='action')
-        
+        self._action_spec = array_spec.BoundedArraySpec(shape=(), dtype=np.int32, minimum=0, maximum=(2**num_sensors) - 1, name='action')
+       
+        """
+        Define the time spec
+        """
         self._time_step_spec = TimeStep(
             step_type=ArraySpec(shape=(), dtype=np.int32, name='step_type'),
             reward=ArraySpec(shape=(), dtype=np.float32, name='reward'),
             discount=BoundedArraySpec(shape=(), dtype=np.float32, name='discount', minimum=0.0, maximum=1.0),
-            observation=BoundedArraySpec(shape=(self.num_sensors, self.num_sensors), dtype=np.float32, name='observation', minimum=0.0, maximum=1000000.0)
+            observation=BoundedArraySpec(shape=(self._num_sensors, self._num_sensors), dtype=np.float32, name='observation', minimum=0.0, maximum=1000.0)
         )
 
         """
@@ -166,57 +169,51 @@ class IoBTEnv(py_environment.PyEnvironment):
         return self._observation_spec
 
     def _reset(self):
+        print("Reseting")
         self._episode_ended = False
 
-        self.step_count = 0
-        self.generated_events = 0
-        self.info = {'captured': 0, 'non-captured': 0}
+        self._step_count = 0
+        #self.info = {'captured': 0, 'non-captured': 0}
 
-        return ts.restart(tf.convert_to_tensor(self._state, dtype=tf.float32))
+        for sensor_id in range(self._num_sensors):
+            rate_file = f'{self._rate_file_dir}/sensor_{sensor_id}_rate.txt'
+            with open(rate_file, 'w') as file:
+                file.write("2")
+
+        print("Done reseting")
+        
+        return TimeStep(
+                step_type=ts.StepType.FIRST,
+                reward=tf.constant(0.0, dtype=tf.float32),
+                discount=tf.constant(1.0, dtype=tf.float32),
+                observation=tf.convert_to_tensor(self._state, dtype=tf.float32)
+                )
+        #return ts.restart(tf.convert_to_tensor(self._state, dtype=tf.float32))
 
     def _step(self, action):
+        print("Steeping")
+        # TODO: write assigned rates to file
         reward = 0
-
-        if self.step_count > self.max_steps:
+        invalid_action = _update_rates(action)  
+        if self._step_count > self._max_steps or invalid_action:
             self._epsiode_ended = True
             return ts.termination(tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constart(0.0, dtype=tf.float32))
-        
-        # TODO: Multi Threading file writing issue bound to happen; lock files before clearing
-        self.temperature = self._load_temperature_data(log_directory)
-        data_len = len(self.temperature[0])
+        # TODO: Erase file contents after reading 
+        self._temperature = self._load_temperature_data(log_directory)
+        data_len = len(self._temperature[0])
 
-        for i in range(len(self.temperature)):
-            for j in range(i + 1, len(self.temperature)):
-                self._state[i][j] = np.linalg.norm(self.temperature[i] - self.temperature[j], ord=2)/data_len
-                print(f"Similarity between sensor {i} and sensor {j}: {self.similarity[i][j]}")
-
-                # Penalize pairs with high similarity and high frequency rates
-                self.similarity_penalty += self._state[i][j] * (action[i] + action[j])
-
-        """
-        for i in range(len(self.sensor_information)):
-            for j in range(i + 1, len(self.sensor_information)):
-                self.similarity[i][j] = np.linalg.norm(self.sensor_information[i,0] - self.sensor_information[j,0], ord = 2) / len(self.sensor_information[i,0])
-                print(f"Similarity between sensor {i} and sensor {j}: {self.similarity}")
+        for i in range(len(self._temperature)):
+            for j in range(i + 1, len(self._temperature)):
+                self._state[i][j] = np.linalg.norm(self._temperature[i] - self._temperature[j], ord=2)/data_len
+                print(f"Similarity between sensor {i} and sensor {j}: {self._state[i][j]}")
 
                 # Penalize pairs with high similarity and high frequency rates
-                self.similarity_penalty += self.similarity[i][j] * (action[i] + action[j])
-        """
-
-        self.similarity_penalty /= (len(self.temperature) * (len(self.temperature) - 1) / 2)
+                self._similarity_penalty += self._state[i][j] * (action[i] + action[j])
 
         ### Calculate energy efficiency
         # Utility combines penalties for redundancy and rewards for high average energy
-        reward = -self.alpha * (self.similarity_penalty)
-
-        """
-        for i in range(len(self.sensor_information)):
-            # self.sensor_information[i,0] = self.temprature[i,self.step_count+1]
-            if self.step_count + 1 < self.temprature.shape[1]:
-                self.sensor_information[i,0] = self.temprature[i, self.step_count + 1]
-        """
-
-        self.step_count += 1
+        reward = -self._alpha * (self._similarity_penalty)
+        self._step_count += 1
 
         #return self.sensor_information, reward, self.epsiode_ended, self.info
         return ts.transition(
