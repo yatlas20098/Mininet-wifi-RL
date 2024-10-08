@@ -219,7 +219,7 @@ def rl_agent_process(env, agent, sensors, cluster_head):
         time.sleep(5) # Update every 5 seconds
 
         time_step = env.reset()
-        epsiode_return = 0.0
+        episode_return = 0.0
 
         while not time_step.is_last():
             action_step = policy_action(time_step)
@@ -318,13 +318,17 @@ def compute_avg_return(env, policy, num_episodes):
     total_return = 0.0
     for _ in range(num_episodes):
         time_step = env.reset()
+        print('reset')
         episode_return = 0.0
 
         while not time_step.is_last():
+            print('not last')
             action_step = policy.action(time_step)
+            print('got action')
             time_step = env.step(action_step.action)
+            print('step')
             episode_return += time_step.reward
-        total_return += epsiode_return
+        total_return += episode_return 
 
     return total_return / num_episodes
 
@@ -408,16 +412,12 @@ def topology(args):
 
         n_episodes = 10
         env = IoBTEnv(rate_file_dir=log_directory)
-        print('action_spec:', env.action_spec())
-        print('time_step_spec.observation:', env.time_step_spec().observation)
-        print('time_step_spec.step_type:', env.time_step_spec().step_type)
-        print('time_step_spec.discount:', env.time_step_spec().discount)
-        print('time_step_spec.reward:', env.time_step_spec().reward)
+        env = tf_py_environment.TFPyEnvironment(env)
 
         # TODO: Validation fails. Fix?
         #utils.validate_py_environment(env, episodes=1)
-
-        train_env = tf_py_environment.TFPyEnvironment(env)
+        #print("Validated env")
+        train_env = env
         fc_layer_params = (100, 50)
         action_tensor_spec = tensor_spec.from_spec(env.action_spec())
         num_actions = action_tensor_spec.maximum - action_tensor_spec.minimum + 1
@@ -440,7 +440,7 @@ def topology(args):
         train_step_counter = tf.Variable(0)
 
         print(train_env.time_step_spec())
-        print('Action space: ', train_env.action_spec())
+        #print('Action space: ', train_env.action_spec())
         print(f'Creating agent')
         agent = dqn_agent.DqnAgent(
             train_env.time_step_spec(),
@@ -452,8 +452,9 @@ def topology(args):
 
         print(f'Initalizing agent')
         agent.initialize()
-
-        avg_return = compute_avg_return(env, tf_agents.policies.random_tf_policy.RandomTFPolicy(train_enc.time_step_spec(), train_env.action_spec(), 10)
+        print('Calculating untrained return')
+        rand_policy = random_tf_policy.RandomTFPolicy(train_env.time_step_spec(), train_env.action_spec()) 
+        avg_return = compute_avg_return(env, rand_policy, 10)
         print("Average untrained return = ", avg_return)
         print("Training the RL agent...")
         #train_agent(train_env, agent)
@@ -461,8 +462,8 @@ def topology(args):
         #     print("Loading pre-trained RL agent...")
         #     agent.load_q_table('q_table.pkl')
 
-        rl_thread = threading.Thread(target=rl_agent_process, args=(env, agent, sensors, cluster_head))
-        rl_thread.start()   
+        #rl_thread = threading.Thread(target=rl_agent_process, args=(env, agent, sensors, cluster_head))
+        #rl_thread.start()   
 
         for thread in sender_threads:
             thread.join()

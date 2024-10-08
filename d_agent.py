@@ -89,10 +89,11 @@ class IoBTEnv(py_environment.PyEnvironment):
             rate_file = f'{self._rate_file_dir}/sensor_{sensor_id}_rate.txt'
             with open(rate_file, 'w') as file:
                 rate = action & 3
+                print(f'Sensor{sensor_id} rate: {rate}')
                 # Invalid Action
-                if rate > 2:
+                if rate > 2 or rate < 0:
                     return True 
-                file.write("{rate}")
+                file.write(f'{rate}')
                 action = action >> 2
         # Valid Action
         return False 
@@ -113,7 +114,7 @@ class IoBTEnv(py_environment.PyEnvironment):
         # Load the temperature data
         self._temperature = self._load_temperature_data(log_directory)
         self._state = np.zeros((num_sensors, num_sensors))
-        print("Observation shape: ", self._state.shape)
+        #print("Observation shape: ", self._state.shape)
         
         data_len = len(self._temperature[0])
         # Calculate similarity at time 0
@@ -169,7 +170,7 @@ class IoBTEnv(py_environment.PyEnvironment):
         return self._observation_spec
 
     def _reset(self):
-        print("Reseting")
+        #print("Reseting")
         self._episode_ended = False
 
         self._step_count = 0
@@ -180,10 +181,10 @@ class IoBTEnv(py_environment.PyEnvironment):
             with open(rate_file, 'w') as file:
                 file.write("2")
 
-        print("Done reseting")
+        #print("Done reseting")
         
         return TimeStep(
-                step_type=ts.StepType.FIRST,
+                step_type=tf.constant(ts.StepType.FIRST, dtype=tf.int32),
                 reward=tf.constant(0.0, dtype=tf.float32),
                 discount=tf.constant(1.0, dtype=tf.float32),
                 observation=tf.convert_to_tensor(self._state, dtype=tf.float32)
@@ -191,16 +192,23 @@ class IoBTEnv(py_environment.PyEnvironment):
         #return ts.restart(tf.convert_to_tensor(self._state, dtype=tf.float32))
 
     def _step(self, action):
-        print("Steeping")
+        #print("Steeping")
         # TODO: write assigned rates to file
         reward = 0
-        invalid_action = _update_rates(action)  
+        invalid_action = self._update_rates(action)  
         if self._step_count > self._max_steps or invalid_action:
             self._epsiode_ended = True
-            return ts.termination(tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constart(0.0, dtype=tf.float32))
-        # TODO: Erase file contents after reading 
+            return TimeStep(
+                step_type=tf.constant(ts.StepType.LAST, dtype=tf.int32),
+                reward=tf.constant(0.0, dtype=tf.float32),
+                discount=tf.constant(0.0, dtype=tf.float32),
+                observation=tf.convert_to_tensor(self._state, dtype=tf.float32)
+                )
+
+            #return ts.termination(tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constart(0.0, dtype=tf.float32))
         self._temperature = self._load_temperature_data(log_directory)
         data_len = len(self._temperature[0])
+        similarity_penalty = 0
 
         for i in range(len(self._temperature)):
             for j in range(i + 1, len(self._temperature)):
@@ -208,16 +216,23 @@ class IoBTEnv(py_environment.PyEnvironment):
                 print(f"Similarity between sensor {i} and sensor {j}: {self._state[i][j]}")
 
                 # Penalize pairs with high similarity and high frequency rates
-                self._similarity_penalty += self._state[i][j] * (action[i] + action[j])
+                similarity_penalty += self._state[i][j] * (action[i] + action[j])
 
         ### Calculate energy efficiency
         # Utility combines penalties for redundancy and rewards for high average energy
-        reward = -self._alpha * (self._similarity_penalty)
+        reward = -self._alpha * similarity_penalty
         self._step_count += 1
 
         #return self.sensor_information, reward, self.epsiode_ended, self.info
-        return ts.transition(
-                tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constant(1.0, dtype=tf.float32))
+        return TimeStep(
+                step_type=tf.constant(ts.StepType.Mid, dtype=tf.int32),
+                reward=tf.constant(reward, dtype=tf.float32),
+                discount=tf.constant(1.0, dtype=tf.float32),
+                observation=tf.convert_to_tensor(self._state, dtype=tf.float32)
+                )
+
+        #return ts.transition(
+        #        tf.convert_to_tensor(self._state, dtype=tf.float32), reward=tf.convert_to_tensor(reward, dtype=tf.float32), discount=tf.constant(1.0, dtype=tf.float32))
 
     def _generate_sensor_positions(self,temp):
         # Set a fixed random seed for reproducibility
