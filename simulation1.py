@@ -3,6 +3,7 @@ import os
 import time
 import threading
 import random
+import multiprocessing
 import json
 from tqdm import tqdm
 from mininet.node import Controller
@@ -14,8 +15,18 @@ from mn_wifi.wmediumdConnector import interference
 import numpy as np
 
 class sensor_cluster():
+    """
+    Check if the cluster head received at least min_lines lines from every sensor.
+
+    Args:
+        base_output_file (string): base of file path
+        min_lines (int): min number of lines that the cluster head must recieve
+
+    Returns:
+        bool: True if the cluster head received at least min_lines from every sensor, false otherwise
+    """
     def _check_received_data(self, base_output_file, min_lines=10):
-        #To run the RL agent, we need to receive at least 10 line in cluster head.
+        #To run the RL agent, the cluster head must recieve at least 10 lines.
         for i in range(self._num_sensors):
             file_path = f'{base_output_file}_{i}.txt'
             if not os.path.exists(file_path):
@@ -27,14 +38,27 @@ class sensor_cluster():
                 if l < min_lines:
                     return False
         return True
+    
+    """
+    Split dataset into chunks
 
+    Args:
+        dataset_dir (string): Path to dataset file
+
+    Returns:
+        String List: List of chunks 
+    """
     def _preprocess_dataset_into_chunks(self, dataset_dir):
         # cache the dataset into memory first
         with open(dataset_dir, 'r') as file:
             lines = file.readlines()
     
         return [lines[i:i + self._chunk_size] for i in range(0, len(lines), self._chunk_size)]
+    
 
+    """
+    Create Mininet topology
+    """
     def _create_topology(self):
             #build network
             self._net = Mininet_wifi(controller=Controller, link=wmediumd,
@@ -73,7 +97,7 @@ class sensor_cluster():
             os.makedirs(log_directory)
 
         """
-        Instinaite rate files with default rates (2)
+        Instantiate rate files with default rates (2)
 
         Files are used to represent changes in the rate assigned by the cluster head to circumvent a limiation of thread control in Mininet-Wifi
         """
@@ -102,7 +126,14 @@ class sensor_cluster():
          
         self._create_topology()
        
-    # Send messages from sensor i to cluster head
+    """
+    Send message from a sensor to the cluster head
+
+    Args:
+        sensor (station): sensor to send message from
+        ch_ip (string): cluster head ip
+        sensor_id (int): id of sensor
+    """
     def _send_messages(self, sensor, ch_ip, sensor_id):
         chunks = self._datasets[sensor_id]
         info(f"Chunk size: {len(chunks)}\n")
@@ -114,6 +145,7 @@ class sensor_cluster():
         packetnumber = 0
         port = 5001 + sensor_id
         rate = 2  # Initial rate
+        sensor.cmd(f'touch {self._log_directory}/sensor_{sensor_id}_log.txt')
         
         for chunk in chunks:
             packet_data = ''.join(chunk)
@@ -129,7 +161,8 @@ class sensor_cluster():
             
             if rate > 0:
                 info(f"Sensor {sensor_id} sending packet {packetnumber} of {packet_size_kb:.2f} KB size \n")
-                sensor.cmd(f'echo "{packet_data}" | nc -v -q 1 -u {ch_ip} {port} >> {self._log_directory}/sensor_{sensor_id}_log.txt')
+                sensor.cmd(f'echo "{packet_data}" | nc -v -q 1 -w0 -u {ch_ip} {port} 2>{self._log_directory}/sensor_{sensor_id}_log.txt')
+                sensor.cmd(f'ps >> {self._log_directory}/sensor_{sensor_id}_ps')
                 info(f"Sensor {sensor_id}: Sent packet {packetnumber} of size {packet_size_kb:.2f} KB at {timestamp}.{ms:03d}\n")
                 print(f"Sensor {sensor_id}: Sent packet {packetnumber} of size {packet_size_kb:.2f} KB at {timestamp}.{ms:03d}\n")
             else:
@@ -146,7 +179,12 @@ class sensor_cluster():
 
         info(f"Sensor {sensor_id}: Finished sending messages\n")
         
-    # Receive messages from sensors to cluster head
+    """
+    Start background netcat listining process for cluster head
+
+    Args:
+        node (station): cluster head 
+    """
     def _receive_messages(self, node):
         base_output_file = f'{self._log_directory}/ch_received_from_sensor'
 
@@ -154,8 +192,8 @@ class sensor_cluster():
             #save the data that receive from different sensor to different file
             output_file = f'{base_output_file}_{i}.txt'
             node.cmd(f'touch {output_file}')
-            #node.cmd(f'while true; do nc -ul -p {5001 + i} >> {output_file} & done &')
-            node.cmd(f'nc -v -ul -k -p {5001 + i} >> {output_file} &')
+            node.cmd(f'nc -n -ulkv -p {5001 + i} >> {output_file} 2>{self._log_directory}/ch_log &')
+            node.cmd(f'ps >> {self._log_directory}/ps')
             info(f"Receiver: Started listening on port {5001 + i} for sensor {i}\n")
         #capture the network by pcap
         pcap_file = f'{self._log_directory}/capture.pcap'
@@ -163,14 +201,24 @@ class sensor_cluster():
         info(f"Receiver: Started tcpdump capture on ports 5001-{5001+self._num_sensors-1}\n")
 
         while True:
-            time.sleep(1)
+            self._check_received_data(f'{self._log_directory}/ch_received_from_sensor')
+            time.sleep(5)
+    
+    """
+    Kill netcat listining process for cluster head
 
+    Args:
+        node (station): cluster head 
+    """
     def _stop_receivers(self, node):
         #stop receiver
         node.cmd('pkill -f "nc -ul"')
         node.cmd('pkill tcpdump')
         info("Stopped all nc receivers and tcpdump\n")
 
+    """
+    Begin message transmission from sensors to cluster head and reap all threads after transmission concludes.   
+    """
     def start(self):
         self._net.build()
         self._net.start()
@@ -181,6 +229,8 @@ class sensor_cluster():
             
             # Activate cluster head listining threads
             receive_thread = threading.Thread(target=self._receive_messages, args=(self._cluster_head,))
+            #receive_thread = multiprocessing.Process(target=self._receive_messages, args=(self._cluster_head,))
+
             receive_thread.start()
             
             # Give listining threads time to start
@@ -212,11 +262,13 @@ class sensor_cluster():
             for thread in sender_threads:
                 thread.join()
 
-            stop_receivers(cluster_head)
-            receive_thread.join()
+            #self._stop_receivers(cluster_head)
+            #receive_thread.join()
             #rl_thread.join()
             # for thread in listener_threads:
             #     thread.join()
+            while True:
+                time.sleep(5)
         
             for sensor in sensors:
                 sensor.cmd('pkill tcpdump')
@@ -233,6 +285,6 @@ class sensor_cluster():
 
 if __name__ == '__main__':
     setLogLevel('info')
-    cluster = sensor_cluster(num_sensors=5)
+    cluster = sensor_cluster(chunk_size=5000, num_sensors=5)
     cluster.start()
     #topology(sys.argv)
