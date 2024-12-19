@@ -111,7 +111,7 @@ class sensor_cluster():
             print('The number of chunks to send must be decreased; not enough data')
 
         #file_lines_per_chunk = file_size // self._chunks_to_send
-        file_lines_per_chunk = 30
+        file_lines_per_chunk = 10
         print(f'{file_lines_per_chunk} file lines per chunk')
 
         # Get the number of bytes in each chunk
@@ -225,12 +225,12 @@ class sensor_cluster():
                     G.add_edge(i,j)
             
         print(f'Rates (Kib/s) : {self._rate_frequencies}')
-        max_throughput = (max(self._rate_frequencies))
-
+        #max_throughput = (max(self._rate_frequencies))
+        
         print(f'Throughputs (Kib/s) : {self._throughputs}')
         print(f'Total throughput over observation: {np.sum(self._throughputs)} KiB/s')
-        print(f'Maximum attainable throughput for a sensor (Kib/s): {max_throughput}')
-        print(f'Maximum attainable throughput all sensors (Kib/s): {self._num_sensors * max_throughput}')
+        #print(f'Maximum attainable throughput for a sensor (Kib/s): {max_throughput}')
+        print(f'Maximum attainable throughput all sensors (Kib/s): {self._max_throughput}')
 
         # Get a maximal clique cover for G
         maximal_clique_cover = list(maximal_cliques(G)) 
@@ -239,13 +239,21 @@ class sensor_cluster():
 
 
         # Reward high throughput of non-redudant data
-        max_clique_throughputs = [max([self._throughputs[node] / (max_throughput) for node in clique]) for clique in maximal_clique_cover] 
-        reward = 0.5 * (np.median(max_clique_throughputs) - 1)
-        reward += 0.5 * ((np.sum(self._throughputs) / (self._num_sensors * max_throughput)) - 1)
+        #max_clique_throughputs = [max([self._throughputs[node] / (max_throughput) for node in clique]) for clique in maximal_clique_cover] 
+        #reward = 0.5 * (np.median(max_clique_throughputs) - 1)
+        #reward += 0.5 * ((np.sum(self._throughputs) / (self._num_sensors * max_throughput)) - 1)
+        max_clique_throughputs = [max([self._throughputs[node] * self._num_sensors / (self._max_throughput) for node in clique]) for clique in maximal_clique_cover] 
+        clique_throughput_reward = 0.5 * (np.median(max_clique_throughputs) - 1)
+        throughput_reward = 0.5 * ((np.sum(self._throughputs) / (self._max_throughput)) - 1)
+        reward = clique_throughput_reward + throughput_reward
+
+        if np.sum(self._throughputs) > self._max_throughput:
+            self._max_throughput = np.sum(self._throughputs) 
 
         print(f'Weighted avg energy: {np.average(self._energy)/100}')
         print(f'Reward: {reward}')
-
+        print(f'Clique reward: {clique_throughput_reward}')
+        print(f'Throughput reward: {throughput_reward}')
 
         for i in range(self._num_sensors):
             self.throughput_log[i].append(self._throughputs[i])
@@ -255,6 +263,9 @@ class sensor_cluster():
         self.clique_log.append(maximal_clique_cover)
 
         self.reward_log.append(reward)
+        self.clique_reward_log.append(clique_throughput_reward)
+        self.throughput_reward_log.append(throughput_reward)
+
         
         obs = pickle.dumps((self._rates_id, similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward))
 
@@ -303,7 +314,7 @@ class sensor_cluster():
                 self._sensors[i].cmd(f'sysctl -w net.core.wmem_max=16777216 >> err.txt 2>&1')
                 self._sensors[i].cmd(f'sysctl -w net.core.rmem_max=16777216 >> err.txt 2>&1')
 
-            #self._net.setPropagationModel(model='logDistance', exp=2)
+            self._net.setPropagationModel(model='logDistance', exp=2)
 
     """
     Creates a socket between the server and cluster head. To avoid networking complications with an HPC firewall, the HPC server approaches the cluster head when creating a connection.   
@@ -347,7 +358,9 @@ class sensor_cluster():
         # Rate configuration
         self._rates_id = 0
         self._rates = [2] * num_sensors
-        self._rate_frequencies = np.array([0, 10, 20, 30]) # Rate frequencies in KB
+        #self._rate_frequencies = np.array([0, 10, 20, 30]) # Rate frequencies in KB
+        self._rate_frequencies = np.array([0, 0.05, 0.2, 0.5])
+        self._max_throughput = 1 # In KB/S
 
         # Initalize semaphores and events 
         self._update_rates = threading.Semaphore(num_sensors) 
@@ -364,7 +377,7 @@ class sensor_cluster():
        
         # Energy configuration
         self._full_energy = 100
-        self._recharge_time = 3
+        self._recharge_time = 1
         self._recharge_threshold = 20
         self._energy = [self._full_energy for _ in range(num_sensors)]
 
@@ -373,6 +386,10 @@ class sensor_cluster():
         self.energy_log = [[] for _ in range(num_sensors)]
         self.throughput_log = [[] for _ in range(num_sensors)]
         self.reward_log = []
+        self.clique_reward_log = []
+        self.throughput_reward_log = []
+
+
         self.clique_log = []
 
         # RL parameters
@@ -429,7 +446,7 @@ class sensor_cluster():
             # Send observation to server
             print('\n\nGetting Observation')
 
-            if chunks_sent % 3 == 0:
+            if chunks_sent % 3 > 0:
                 chunks_sent += 1
                 for update_rate in self._update_rates_status:
                     update_rate.set()
@@ -460,7 +477,7 @@ class sensor_cluster():
 
                 if chunks_sent % 30 == 0:
                     with open('figure_data.pkl', 'wb') as file:
-                        pickle.dump((self._sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_log), file)
+                        pickle.dump((self._sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_reward_log, self.throughput_reward_log, self.clique_log), file)
 
 
             except socket.error as e:
@@ -550,12 +567,14 @@ class sensor_cluster():
             self._update_rates_status[sensor_id].clear()
 
             # Get the current transmission rate
-            rate = self._rates[sensor_id]
-            #rate = chunks_sent % len(self._rate_frequencies) 
+            transmit_rate = self._rate_frequencies[self._rates[sensor_id]] * self._max_throughput
+            #rate = chunks_sent % len(self._rate_frequencies)
 
             # Get the chunk to send
             chunk = chunks[chunks_sent]
-            chunk = chunk + 'G'*(int(self._rate_frequencies[rate] * 1024 * self._observation_time - len(chunk))) 
+            #chunk = chunk + 'G'*(int(self._rate_frequencies[rate] * 1024 * self._observation_time - len(chunk)))
+            chunk = chunk + 'G' * int(transmit_rate * 1024 * self._observation_time - len(chunk)) 
+
 
             #chunk_str = chunk + 'G'*
 
@@ -585,7 +604,7 @@ class sensor_cluster():
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(transmission_start_time))
             ms = int((transmission_start_time - time.time()) * 1000)
 
-            bytes_to_transmit = int(self._rate_frequencies[rate] * 1024 * self._observation_time)
+            bytes_to_transmit = int(transmit_rate * 1024 * self._observation_time)
             with open(f'tmp/chunk{sensor_id}.txt','w') as f:
                 f.write(chunk[:bytes_to_transmit])
 
@@ -595,15 +614,15 @@ class sensor_cluster():
                 cmd = f'cat tmp/chunk{sensor_id}.txt | nc -v -q 1 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
                 sensor.cmd(cmd)
 
-                self._energy[sensor_id] -= 4 * self._rate_frequencies[rate] / max(self._rate_frequencies)
+                self._energy[sensor_id] -= 4 * transmit_rate / max(self._rate_frequencies) / self._max_throughput / 3
                 info(f"Sensor {sensor_id}: Sent chunk {chunks_sent} of size {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
             else:
-                self._energy[sensor_id] -= 0.3
+                self._energy[sensor_id] -= 0.3 / 3 
                 info(f"Sensor {sensor_id}: Skipped sending chunk {chunks_sent} due to rate 0 at {timestamp}.{ms:03d}\n")
 
             chunks_sent += 1
 
-            info(f'Sent {bytes_to_transmit/1024} KiB at {self._rate_frequencies[rate]} KiB/s\n')
+            info(f'Sent {bytes_to_transmit/1024} KiB at {transmit_rate} KiB/s\n')
             transmission_time = time.time() - transmission_start_time
             info(f'Transmission time: {transmission_time}\n')
 
@@ -753,7 +772,7 @@ class sensor_cluster():
 
             print(f'Simulation complete; saving data\n')
             with open('figure_data.pkl', 'wb') as file:
-                pickle.dump((self._sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_log), file)
+                pickle.dump((self._sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_reward_log, self.throughput_reward_log, self.clique_log), file)
             print(f'Pickle dump succesfuly made\n')
 
             self._stop_receivers(cluster_head)
@@ -968,6 +987,7 @@ class sensor_cluster():
 if __name__ == '__main__':
     setLogLevel('info')
     server_ip = '192.168.20.201'
+    #server_ip = '127.0.0.1'
     port = 5000
     sensor_ids = range(5, 15)
     cluster = sensor_cluster(1, sensor_ids, server_ip, port, packet_size=1472*1)
