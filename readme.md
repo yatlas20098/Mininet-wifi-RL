@@ -22,7 +22,7 @@ cd mininet-wifi
 step 4: 
 
 ```
-$ sudo util/install.sh -Wlnfv
+sudo util/install.sh -Wlnfv
 ```
 
 ##### install.sh options:
