@@ -4,25 +4,25 @@
 step 1:
 
 ```
- $ sudo apt-get install git
+sudo apt-get install git
 ```
 
 step 2: 
 
 ```
-$ git clone https://github.com/intrig-unicamp/mininet-wifi
+git clone https://github.com/intrig-unicamp/mininet-wifi
 ```
 
 step 3: 
 
 ```
-$ cd mininet-wifi
+cd mininet-wifi
 ```
 
 step 4: 
 
 ```
-$ sudo util/install.sh -Wlnfv
+sudo util/install.sh -Wlnfv
 ```
 
 ##### install.sh options:
