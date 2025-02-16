@@ -80,6 +80,7 @@ class sensor_cluster():
                 except (ValueError, IndexError):
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
+            self._throughputs[sensor_id] = bytes_received / 1024 / self._observation_time
 
         return np.array(data)
 
@@ -160,35 +161,43 @@ class sensor_cluster():
         similarity = np.zeros((self._num_sensors, self._num_sensors))
         reward = 0
 
-        awake_sensors = temperature_data.keys()
+        awake_sensors = list(temperature_data.keys())
          
         # Create a graph with veritices representing sensors and edges denoting similarity
         G = nx.Graph()
 
         print(f'Awake sensors: {awake_sensors}')
+        print(f'Temp data: {temperature_data}')
         
         for i in range(self._num_sensors):
             G.add_node(i)
-            self._throughputs[i] = 0 
 
         for i in range(len(awake_sensors)):
+            print(f"throughput in bytes for sensor {awake_sensors[i]}: {self._throughputs[i]}")
             # Get the average throughput in KiB/s 
-            self._throughputs[i] = len(temperature_data[i]) / 1028 / self._observation_time
+            #self._throughputs[awake_sensors[i]] = len(temperature_data[awake_sensors[i]]) / 1024 / self._observation_time
 
             for j in range(i + 1, len(awake_sensors)):
                 # TODO: Currently only using first data point for similiarity; need to add timestamps to data for more robust similarity checking
-                similarity[i,j] = int(temperature_data[i][0] - temperature_data[j][0] <= self._similarity_threshold)
-                if similarity[i,j] == 1:
-                    print(f'Node {i} ~ Node {j}')
-                    G.add_edge(i,j)
+                similarity[awake_sensors[i], awake_sensors[j]] = int(temperature_data[awake_sensors[i]][0] - temperature_data[awake_sensors[j]][0] <= self._similarity_threshold)
+                if similarity[awake_sensors[i],awake_sensors[j]] == 1:
+                    print(f'Node {awake_sensors[i]} ~ Node {awake_sensors[j]}')
+                    G.add_edge(awake_sensors[i],awake_sensors[j])
             
-        print(f'Rates (Kib/s) : {self._rate_frequencies}')
-        #max_throughput = (max(self._rate_frequencies))
+        print(f'Rates (Kib/s) : {[a for a in self.transmission_freq_idxs]}')
+        max_throughput = (max(self._throughputs))
+
+        self._max_throughput = max(max(self._throughputs), self._max_throughput)
+        self._max_total_throughput = max(self._max_total_throughput, sum(self._throughputs))
+
+        if self._max_throughput == 0:
+            return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, 0)
+
         
         print(f'Throughputs (Kib/s) : {self._throughputs}')
         print(f'Total throughput over observation: {np.sum(self._throughputs)} KiB/s')
         #print(f'Maximum attainable throughput for a sensor (Kib/s): {max_throughput}')
-        print(f'Maximum attainable throughput all sensors (Kib/s): {self._max_throughput}')
+        #print(f'Maximum attainable throughput all sensors (Kib/s): {self._max_throughput}')
 
         # Get a maximal clique cover for G
         maximal_clique_cover = list(maximal_cliques(G)) 
@@ -199,9 +208,10 @@ class sensor_cluster():
         #max_clique_throughputs = [max([self._throughputs[node] / (max_throughput) for node in clique]) for clique in maximal_clique_cover] 
         #reward = 0.5 * (np.median(max_clique_throughputs) - 1)
         #reward += 0.5 * ((np.sum(self._throughputs) / (self._num_sensors * max_throughput)) - 1)
-        max_clique_throughputs = [max([self._throughputs[node] * self._num_sensors / (self._max_throughput) for node in clique]) for clique in maximal_clique_cover] 
+        
+        max_clique_throughputs = [max([self._throughputs[node] / (self._max_throughput) for node in clique]) for clique in maximal_clique_cover] 
         clique_throughput_reward = 0.5 * (np.median(max_clique_throughputs) - 1)
-        throughput_reward = 0.5 * ((np.sum(self._throughputs) / (self._max_throughput)) - 1)
+        throughput_reward = 0.5 * ((np.sum(self._throughputs) / (self._max_total_throughput)) - 1)
         reward = clique_throughput_reward + throughput_reward
 
         if np.sum(self._throughputs) > self._max_throughput:
@@ -215,7 +225,7 @@ class sensor_cluster():
         for i in range(self._num_sensors):
             self.throughput_log[i].append(self._throughputs[i])
             self.energy_log[i].append(self._energy[i])
-            self.rate_log[i].append(self._rates[i])
+            self.rate_log[i].append(self.transmission_freq_idxs[i])
 
         self.clique_log.append(maximal_clique_cover)
 
@@ -223,7 +233,7 @@ class sensor_cluster():
         self.clique_reward_log.append(clique_throughput_reward)
         self.throughput_reward_log.append(throughput_reward)
         
-        return (self._rates_id, similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward)
+        return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward)
     
     """
     Create Mininet topology
@@ -262,20 +272,20 @@ class sensor_cluster():
                 self._sensors[i].cmd(f'sysctl -w net.core.wmem_max=16777216 >> err.txt 2>&1')
                 self._sensors[i].cmd(f'sysctl -w net.core.rmem_max=16777216 >> err.txt 2>&1')
 
-            self._net.setPropagationModel(model='logDistance', exp=2)
+            #self._net.setPropagationModel(model='logDistance', exp=2)
 
-    def __init__(self, cluster_id, sensor_ids, server_ip, server_port, num_sensors=10, transmission_size=2*1024, log_directory='data/log', dataset_directory='data/towerdataset', data_offset=0):
+    def __init__(self, cluster_id, sensor_ids, num_sensors=10, transmission_size=2*1024, observation_time=10, file_lines_per_chunk=10, log_directory='data/log', dataset_directory='data/towerdataset', data_offset=0):
         # Connection and configuration parameters
         self._cluster_id = cluster_id
-        self._server_ip = server_ip
-        self._server_port = server_port
         self._transmission_size = transmission_size # in bytes
         self._sensor_ids = sensor_ids
         self._num_sensors = len(sensor_ids)
         self._similarity_threshold = 1
         self._throughputs = [0 for i in range(num_sensors)]
         self._chunks_to_send = 2000
-        self._observation_time = 10 # The number of seconds between each observation
+        self._observation_time = observation_time # The number of seconds between each observation
+        self._max_throughput = 0
+        self._max_total_throughput = 0
 
         # Directories
         self._log_directory = log_directory
@@ -284,7 +294,7 @@ class sensor_cluster():
        
         # Rate configuration
         self._rates_id = 0
-        self._transmission_freq_idxs = [2] * num_sensors
+        self.transmission_freq_idxs = multiprocessing.Array('i', [2] * num_sensors)
         self._transmission_frequencies = np.array([0, 1, 2, 4]) # possible transmit frequencies transmissions per second)
 
         # Initalize semaphores and events 
@@ -301,7 +311,7 @@ class sensor_cluster():
 
         # Energy configuration
         self._full_energy = 100
-        self._recharge_time = 1
+        self._recharge_time = 10
         self._recharge_threshold = 20
         self._energy = [self._full_energy for _ in range(num_sensors)]
 
@@ -342,64 +352,6 @@ class sensor_cluster():
 
         self._create_topology()
         
-    def _receive_rates_from_server(self):
-        chunks_sent = 0
-        while(True):
-            # Wait for current data transmissions to end
-            for transmit_status in self._transmit_data_status:
-                transmit_status.wait()
-                transmit_status.clear()
-
-            for transmit_status in self._ready_to_transmit:
-                transmit_status.clear()
-           
-            # Give data time to arrive
-            time.sleep(0.1)
-
-            # Send observation to server
-            print('\n\nGetting Observation')
-
-            if chunks_sent % 3 > 0:
-                chunks_sent += 1
-                for update_rate in self._update_rates_status:
-                    update_rate.set()
-                continue
-
-            self._get_agent_obs()
-
-            print('Getting new rates from server')
-            try:
-                # Get the packed new transmission rates from server
-                packed_data = self._server.recv(4 * (self._num_sensors + 1))
-                if len(packed_data) == 0:
-                    print("Connection terminated by server")
-                    break
-
-                # Unpack the new transmission rates
-                unpacked_data = struct.unpack('!' + 'i'*(self._num_sensors + 1), packed_data)
-
-                # Update the current transmission rates
-                rates = unpacked_data[1:]
-                for sensor_id in range(self._num_sensors):
-                    self._rates[sensor_id] = rates[sensor_id]
-
-                self._rates_id = unpacked_data[0]
-                print(f'New rates {rates}.\nID = {self._rates_id}\n\n')
-
-                chunks_sent += 1
-
-                if chunks_sent % 30 == 0:
-                    with open('figure_data.pkl', 'wb') as file:
-                        pickle.dump((self._sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_reward_log, self.throughput_reward_log, self.clique_log), file)
-
-
-            except socket.error as e:
-                print("No new rates from server\n\n")
-
-            # Allow next data transmission to begin
-            for update_rate in self._update_rates_status:
-                update_rate.set()
-
     """
     Send message from a sensor to the cluster head
 
@@ -420,6 +372,8 @@ class sensor_cluster():
         
         # Create a file to store the packets received by the cluster head
         sensor.cmd(f'touch {self._log_directory}/sensor_{sensor_id}_log.txt')
+        sensor.cmd(f'touch {self._log_directory}/test.txt')
+
        
         # Track the number of chunks sent 
         chunks_sent = 0
@@ -432,10 +386,11 @@ class sensor_cluster():
         
         # Initalize the sensors energy and the recharge count 
         energy = self._full_energy
+        self._energy[sensor_id] = self._full_energy
         charge_count = 0
 
         # Log the initial transmission rate
-        self.rate_log[sensor_id].append(self._transmission_freq_idxs[sensor_id])
+        self.rate_log[sensor_id].append(self.transmission_freq_idxs[sensor_id])
 
         while next_chunk_idx < len(chunks):
             # Recharge sensor if energy is below the recharge threshold
@@ -443,15 +398,15 @@ class sensor_cluster():
                 charge_count += 1
                 recharge_time = time.time()
                 rechar_time_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(recharge_time))
-                info(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy below threshold ({self._recharge_threshold}). Recharging...\n')
+                #print(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy {self._energy[sensor_id]} below threshold ({self._recharge_threshold}). Recharging...')
                 time.sleep(self._recharge_time)
-                next_chunk_idx += self._recharge_time // min(self._transmission_frequencies)
+                next_chunk_idx += self._recharge_time // max(self._transmission_frequencies)
                                 
                 # Update the sensors energy and log the new energy level
                 self._energy[sensor_id] = self._full_energy
                 sensor.energy = energy
 
-                info(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy Recharged to full energy ({self._full_energy}), Current time: {recharge_time}, Charge Count: {charge_count}. Resuming operations.\n')
+                #print(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy Recharged to full energy ({self._full_energy}), Current time: {recharge_time}, Charge Count: {charge_count}. Resuming operations.')
                 
                 if next_chunk_idx >= len(chunks):
                     self._transmit_data_status[sensor_id].set()
@@ -462,7 +417,7 @@ class sensor_cluster():
             #self._update_rates_status[sensor_id].clear()
 
             # Get the current transmission rate
-            transmit_rate = self._transmission_frequencies[self._transmission_freq_idxs[sensor_id]] 
+            transmit_rate = self._transmission_frequencies[self.transmission_freq_idxs[sensor_id]] 
 
             # Store the current time
             transmission_start_time = time.time()
@@ -472,7 +427,7 @@ class sensor_cluster():
             if transmit_rate == 0:
                 next_chunk_idx += int(max(self._transmission_frequencies))
                 self._energy[sensor_id] -= 0.3
-                info(f"Sensor {sensor_id}: Skipped sending chunk {chunks_sent} due to rate 0 at {timestamp}.{ms:03d}\n")
+                #print(f"Sensor {sensor_id}: Skipped sending chunk {chunks_sent} due to rate 0 at {timestamp}.{ms:03d}\n")
 
                 time.sleep(1)
                 continue
@@ -482,16 +437,16 @@ class sensor_cluster():
             chunk = chunks[int(next_chunk_idx)] 
            
             # Send chunk
-            info(f"Sensor {sensor_id}: Sending chunk {chunks_sent} of {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
-            cmd = f'{chunk} | nc -v -q 1 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
+            #print(f"print {sensor_id}: Sending chunk {chunks_sent} of {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
+            cmd = f'echo "{chunk}" | nc -v -q 1 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
             sensor.cmd(cmd)
             self._energy[sensor_id] -= 4 
-            info(f"Sensor {sensor_id}: Sent chunk {chunks_sent} of size {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
+            #print(f"Sensor {sensor_id}: Sent chunk {chunks_sent} of size {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
 
             chunks_sent += 1
 
             transmission_time = time.time() - transmission_start_time
-            info(f'Transmission time: {transmission_time}\n')
+            #print(f'Transmission time: {transmission_time}\n')
 
             sleep_time = 1 / transmit_rate
             
@@ -507,46 +462,6 @@ class sensor_cluster():
         info(f"Sensor {sensor_id}: Finished sending messages\n")
         self._transmit_data_status[sensor_id].set()
 
-
-    def _send_obs_to_server(self):
-        #self._get_agent_obs()
-        """
-        obs = self._get_agent_obs()
-
-        # Send the size of the observation in bytes to the server.
-        obs_length = len(obs)
-        self._server.sendall(struct.pack('!I', obs_length))
-
-        # Send the observation to the server.
-        self._server.sendall(obs)
-        print('Sent observation to server')
-        """
-   
-    def _transfer_received_data(self, min_lines=10):
-        file_dir = self._log_directory
-        data_sent = False
-
-        # Wait for first date tranmissions to finish before sending an observation
-        #for data_transmission_status in self._data_transmission_status:
-        #    data_transmission_status.wait()
-        """ 
-        while(True):
-            self._cluster_head.cmd(f'netstat -i >> {self._log_directory}/netstat_output.txt')
-            self._cluster_head.cmd(f'ss -i >> {self._log_directory}/ss_output.txt')
-            self._cluster_head.cmd(f'iw dev ch-wlan0 link >> {self._log_directory}/iw.txt 2>> {self._log_directory}/iw_err.txt')
-            self._cluster_head.cmd(f'ss -u -a >> {self._log_directory}/drops.txt')
-
-            # Skip observation if not enough data received 
-            for i in range(self._num_sensors):
-                file_name = f'ch_received_from_sensor_{i}.txt'
-                if not os.path.exists(f'{file_dir}/{file_name}'):
-                   time.sleep(self._observation_time) 
-                with open(f'{file_dir}/{file_name}', 'r+') as file:
-                    while sum(1 for _ in file) < min_lines:
-                       time.sleep(self._observation_time) 
-            #self._get_agent_obs()
-            time.sleep(self._observation_time)
-        """
 
     """
     Start background netcat listining process for cluster head
@@ -591,12 +506,15 @@ class sensor_cluster():
     Begin message transmission from sensors to cluster head and reap all threads after transmission concludes.   
     """
     def start(self):
+        print("STARTING")
         self._net.build()
         self._net.start()
 
         info("*** Setting up communication flow\n")
         try:
             info("*** Starting receivers\n")
+            print("Starting receivers")
+
             
             # Activate cluster head listening threads
             receive_thread = threading.Thread(target=self._receive_messages, args=(self._cluster_head,))
@@ -606,7 +524,8 @@ class sensor_cluster():
 
             # Give listening threads time to start
             time.sleep(10) 
-
+            
+            print("Starting senders")
             info("*** Starting senders\n")
             sender_threads = []
             listener_threads = []
