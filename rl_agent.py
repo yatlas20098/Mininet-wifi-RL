@@ -9,6 +9,7 @@ from collections import namedtuple, deque
 from itertools import count
 import struct
 import time
+import threading
 
 import torch
 import torch.nn as nn
@@ -83,26 +84,28 @@ class DQN(nn.Module):
         return x
 
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001):
-        self._env = WSNEnvironment(max_steps=100, sampling_freq=sampling_freq, cluster_id=0, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=0.2, device=device)
+    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001):
+        self._env = [WSNEnvironment(max_steps=100, sampling_freq=sampling_freq, cluster_id=i, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame=transmission_frame, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=0.2, device=device) for i in range(num_clusters)]
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq
-        self.num_actions = self._env.action_space.shape[0]
-        self._state, self._info = self._env.reset()
+        self._state, self._info = [list(t) for t in zip(*[env.reset() for env in self._env])]
         self._n_observations = self._num_sensors
         self._recharge_thresh = 0.2
+        self._update_lock = threading.Lock()
+        self._num_clusters = num_clusters
 
-        self._policy_net = DQN(sampling_freq, self._n_observations, self.num_actions, self._num_sensors).to(device)
-        self._target_net = DQN(sampling_freq, self._n_observations, self.num_actions, self._num_sensors).to(device)
+        num_actions = self._env[0].action_space.shape[0] # All envs have the same action and observation space
+        self._policy_net = DQN(sampling_freq, self._n_observations, num_actions, self._num_sensors).to(device)
+        self._target_net = DQN(sampling_freq, self._n_observations, num_actions, self._num_sensors).to(device)
         self._target_net.load_state_dict(self._policy_net.state_dict())
 
         self._optimizer = optim.AdamW(self._policy_net.parameters(), lr=LR, amsgrad=True)
         self._memory = ReplayMemory(3000)
 
-        self._steps_done = 0
+        self._steps_done = [0 for i in range(num_clusters)]
         self._episode_durations = []
         self._energy_consumption = []
-        self._rewards = []
+        self._rewards = [[] for _ in range(num_clusters)]
 
         self._BATCH_SIZE = BATCH_SIZE 
         self._GAMMA = GAMMA 
@@ -113,13 +116,13 @@ class WSN_agent:
 
         time.sleep(10)
 
-    def select_action(self):
+    def select_action(self, cluster_id):
         sample = random.random()
-        eps_threshold = self._EPS_END + (self._EPS_START - self._EPS_END) * math.exp(-1. * self._steps_done / self._EPS_DECAY)
-        self._steps_done += 1
+        eps_threshold = self._EPS_END + (self._EPS_START - self._EPS_END) * math.exp(-1. * self._steps_done[cluster_id] / self._EPS_DECAY)
+        self._steps_done[cluster_id] += 1
         action = None
 
-        energy = self._state[:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
+        energy = self._state[cluster_id][:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
         energy = energy.squeeze()
         dead_sensors = (energy <= self._recharge_thresh)
         awake_sensors = (energy > self._recharge_thresh)
@@ -127,7 +130,7 @@ class WSN_agent:
         if sample > eps_threshold:
             print('Getting best action')
             with torch.no_grad():
-                action_values = self._policy_net(self._state)
+                action_values = self._policy_net(self._state[cluster_id])
                 action_values= action_values.view(1, self._num_sensors, 4)
                 action_probs = F.softmax(action_values, dim=-1)
                 action = torch.argmax(action_probs, dim=-1)
@@ -273,6 +276,71 @@ class WSN_agent:
         self._optimizer.step()
         #self._scheduler.step()
 
+    def _train(self, cluster_id):
+        if torch.cuda.is_available() or torch.backends.mps.is_available():
+            print('Torch Cuda is available')
+            num_episodes = 3 
+        else:
+            print('Torch Cuda is not available')
+            num_episodes = 3 
+
+        self._train_every = 10
+        self._train_steps = 0
+
+        for i_episode in range(num_episodes):
+            # Initialize the environment and get its state
+            print(self._env[cluster_id].reset())
+            self._state[cluster_id], self._info[cluster_id] = self._env[cluster_id].reset()
+            self._state[cluster_id] = torch.tensor(self._state[cluster_id], dtype=torch.float32, device=device).unsqueeze(0)
+            print(f'Cluster {cluster_id} State = {self._state[cluster_id]}')
+            first_step = True
+
+            for t in count():
+                print(f'\n\nEpisode {i_episode}, Step: {t}')
+                action = torch.Tensor.cpu(self.select_action(cluster_id))
+
+                print('Taking next step')
+                observation, reward, terminated, truncated, _ = self._env[cluster_id].step(self._steps_done[cluster_id], action.numpy())
+                self._rewards[cluster_id].append(reward)
+                print(f'Reward: {reward}')
+                
+                reward = torch.tensor([reward], device=device)
+                done = terminated or truncated
+
+                if terminated:
+                    next_state = None
+                else:
+                    next_state = observation.unsqueeze(0).clone().detach()
+
+                with self._update_lock:
+                    # Store the transition in memory
+                    self._memory.push(self._state[cluster_id], action, next_state, reward)
+
+                    # Move to the next state
+                    self._state[cluster_id] = next_state
+                    
+                    if self._train_steps >= self._train_every:
+                    # Perform one step of the optimization (on the policy network)
+                        self._optimize_model(first_step)
+                        self._train_steps = 0
+                        first_step = False
+
+                    # Soft update of the target network's weights
+                    # θ′ ← τ θ + (1 −τ )θ′
+                    target_net_state_dict = self._target_net.state_dict()
+                    policy_net_state_dict = self._policy_net.state_dict()
+                    for key in policy_net_state_dict:
+                        target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
+                    self._target_net.load_state_dict(target_net_state_dict)
+
+                    if done:
+                        self._episode_durations.append(t + 1)
+                        self.plot_durations()
+                        break
+                    print('Step done')
+
+                    self._train_steps += 1
+
     def start(self):
         if torch.cuda.is_available() or torch.backends.mps.is_available():
             print('Torch Cuda is available')
@@ -284,64 +352,21 @@ class WSN_agent:
         self._train_every = 10
         self._train_steps = 0
 
-        for i_episode in range(num_episodes):
-            # Initialize the environment and get its state
-            self._state, self._info = self._env.reset()
-            self._state = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
-            print(f'State = {self._state}')
-            first_step = True
+        training_threads = []
+        for i in range(self._num_clusters):
+            train_thread = threading.Thread(target=(self._train), args=(i,))
+            train_thread.start()
+            training_threads.append(train_thread)
 
-            for t in count():
-                print(f'\n\nEpisode {i_episode}, Step: {t}')
-                action = torch.Tensor.cpu(self.select_action())
-
-                print('Taking next step')
-                observation, reward, terminated, truncated, _ = self._env.step(self._steps_done, action.numpy())
-                self._rewards.append(reward)
-                print(f'Reward: {reward}')
-                
-                reward = torch.tensor([reward], device=device)
-                done = terminated or truncated
-
-                if terminated:
-                    next_state = None
-                else:
-                    next_state = observation.unsqueeze(0).clone().detach() 
-
-                # Store the transition in memory
-                self._memory.push(self._state, action, next_state, reward)
-
-                # Move to the next state
-                self._state = next_state
-                
-                if self._train_steps >= self._train_every:
-                # Perform one step of the optimization (on the policy network)
-                    self._optimize_model(first_step)
-                    self._train_steps = 0
-                    first_step = False
-
-                # Soft update of the target network's weights
-                # θ′ ← τ θ + (1 −τ )θ′
-                target_net_state_dict = self._target_net.state_dict()
-                policy_net_state_dict = self._policy_net.state_dict()
-                for key in policy_net_state_dict:
-                    target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
-                self._target_net.load_state_dict(target_net_state_dict)
-
-                if done:
-                    self._episode_durations.append(t + 1)
-                    self.plot_durations()
-                    break
-                print('Step done')
-
-                self._train_steps += 1
+        for thread in training_threads:
+            thread.join()
 
         print('Complete; validating')
         validate_ep = 0
         while True:
             print(f'Episode: {validate_ep}') 
             # Initialize the environment and get its state
-            self._state, self._info = self._env.reset()
+            self._state, self._info = self._env[0].reset()
             self._state = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
 
             for t in count():
@@ -400,5 +425,5 @@ class WSN_agent:
 
 if __name__ == '__main__':
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=1024*20, file_lines_per_chunk=1)
+    agent = WSN_agent(num_clusters=2, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame=1/16, file_lines_per_chunk=1, observation_time=10)
     agent.start()

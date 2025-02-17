@@ -116,8 +116,8 @@ class sensor_cluster():
         chunks = [''.join(chunk) for chunk in chunks[data_offset*self._chunks_to_send: (data_offset + 1) * self._chunks_to_send]]
 
         # Pad chunks to correct size
-        filler = 'G' * (self._transmission_size - 1) + '\n'
-        chunks = [chunk + filler[len(chunks):] for chunk in chunks]
+        #filler = 'G' * (self._transmission_size - 1) + '\n'
+        #chunks = [(chunk + filler[len(chunks):]).encode('utf-8')  for chunk in chunks]
 
         return chunks
    
@@ -222,70 +222,77 @@ class sensor_cluster():
         print(f'Clique reward: {clique_throughput_reward}')
         print(f'Throughput reward: {throughput_reward}')
 
-        for i in range(self._num_sensors):
-            self.throughput_log[i].append(self._throughputs[i])
-            self.energy_log[i].append(self._energy[i])
-            self.rate_log[i].append(self.transmission_freq_idxs[i])
+        #for i in range(self._num_sensors):
+            #self.throughput_log[i].append(self._throughputs[i])
+            #self.energy_log[i].append(self._energy[i])
+            #self.rate_log[i].append(self.transmission_freq_idxs[i])
 
-        self.clique_log.append(maximal_clique_cover)
+        #self.clique_log.append(maximal_clique_cover)
 
-        self.reward_log.append(reward)
-        self.clique_reward_log.append(clique_throughput_reward)
-        self.throughput_reward_log.append(throughput_reward)
+        #self.reward_log.append(reward)
+        #self.clique_reward_log.append(clique_throughput_reward)
+        #self.throughput_reward_log.append(throughput_reward)
         
         return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward)
-    
+   
+    def _generate_mac(self, identifier):
+        base_mac = '00:00:00:00'
+        return f'{base_mac}:{self._cluster_id:02x}:{identifier:02x}'
+   
     """
     Create Mininet topology
     """
     def _create_topology(self):
-            #build network
-            self._net = Mininet_wifi(controller=Controller, link=wmediumd,
-                               wmediumd_mode=interference)
+        #build network
+        #self._net = Mininet_wifi(controller=Controller, link=wmediumd, wmediumd_mode=interference)
+        controller = Controller('c{self._cluster_id}', port=6653+self._cluster_id)
+        self._net = Mininet_wifi(link=wmediumd, wmediumd_mode=interference)
 
-            info("*** Creating nodes\n")
-            #create accesspoint
-            ap23 = self._net.addAccessPoint('ap23', ssid='new-ssid', mode='g', channel='5', position='50,50,0', cpu=1, mem=1024*2)
-            
-            #create 10 sensors
-            self._sensors = []
-            for i in range(self._num_sensors):
-                ip_address = f'192.168.0.{i + 1}/24'
-                self._sensors.append(self._net.addStation(f's{i}', ip=ip_address,
-                                              range='116', position=f'{-30 - i},-30,0', cpu=1, mem=1024*2))
-            #create cluster head
-            self._cluster_head = self._net.addStation('ch', ip='192.168.0.100/24',
-                                          range='150', position='70,70,0', cpu=1, mem=1024*2)
-            
-            info("*** Adding Controller\n")
-            self._net.addController('c0')
+        info("*** Creating nodes\n")
+        print(f'ap mac: {self._generate_mac(1)}')
+        #create accesspoint
+        ap = self._net.addAccessPoint(f'ap{self._cluster_id}', ssid=f'c{self._cluster_id}-ssid', mode='g', channel='5', position='50,50,0', cpu=1, mem=1024*2, mac=self._generate_mac(1))
+       
+        #create cluster head
+        print(f'cluster head mac: {self._generate_mac(2)}')
+        self._cluster_head = self._net.addStation(f'ch{self._cluster_id}', ip=f'192.168.{self._cluster_id}.100/24',
+                                      range='150', position='30,30,0', cpu=1, mem=1024*2, mac=self._generate_mac(2))
 
-            info("*** Configuring wifi nodes\n")
-            self._net.configureWifiNodes()
+        #create 10 sensors
+        self._sensors = []
+        for i in range(self._num_sensors):
+            ip_address = f'192.168.{self._cluster_id}.{i + 1}/24'
+            print(f'sensor mac: {self._generate_mac(i+3)}')
 
-            self._cluster_head.cmd(f'sysctl -w net.ipv4.ip_no_pmtu_disc=0 >> err.txt 2>&1')
-            self._cluster_head.cmd(f'sysctl -w net.core.rmem_max=16777216 >> err.txt 2>&1')
-            self._cluster_head.cmd(f'sysctl -w net.core.wmem_max=16777216 >> err.txt 2>&1')
+            self._sensors.append(self._net.addStation(f'c{self._cluster_id}s{i}', ip=ip_address,
+                                          range='116', position=f'{-30 - i},-30,0', cpu=1, mem=1024*2, mac=self._generate_mac(i+3)))
 
-            for i in range(self._num_sensors):
-                self._sensors[i].cmd(f'sysctl -w net.ipv4.ip_no_pmtu_disc=0 >> err.txt 2>&1')
-                self._sensors[i].cmd(f'sysctl -w net.core.wmem_max=16777216 >> err.txt 2>&1')
-                self._sensors[i].cmd(f'sysctl -w net.core.rmem_max=16777216 >> err.txt 2>&1')
+        
+        
+        info("*** Adding Controller\n")
+        #self._net.addController(f'c{self._cluster_id}')
+        self._net.addController(controller)
 
-            #self._net.setPropagationModel(model='logDistance', exp=2)
+        info("*** Configuring wifi nodes\n")
+        self._net.configureWifiNodes()
 
-    def __init__(self, cluster_id, sensor_ids, num_sensors=10, transmission_size=2*1024, observation_time=10, file_lines_per_chunk=10, log_directory='data/log', dataset_directory='data/towerdataset', data_offset=0):
+        #self._net.setPropagationModel(model='logDistance', exp=2)
+
+    def __init__(self, cluster_id, sensor_ids, transmission_size=2*1024, transmission_frame=1, observation_time=10, file_lines_per_chunk=10, log_directory='data/log', dataset_directory='data/towerdataset', data_offset=0):
         # Connection and configuration parameters
         self._cluster_id = cluster_id
+
+        print(f"Cluster id: {cluster_id}")
         self._transmission_size = transmission_size # in bytes
         self._sensor_ids = sensor_ids
         self._num_sensors = len(sensor_ids)
         self._similarity_threshold = 1
-        self._throughputs = [0 for i in range(num_sensors)]
-        self._chunks_to_send = 2000
+        self._throughputs = [0 for i in range(self._num_sensors)]
+        self._chunks_to_send = 10000
         self._observation_time = observation_time # The number of seconds between each observation
         self._max_throughput = 0
         self._max_total_throughput = 0
+        self._transmission_frame=transmission_frame
 
         # Directories
         self._log_directory = log_directory
@@ -294,31 +301,31 @@ class sensor_cluster():
        
         # Rate configuration
         self._rates_id = 0
-        self.transmission_freq_idxs = multiprocessing.Array('i', [2] * num_sensors)
+        self.transmission_freq_idxs = multiprocessing.Array('i', [2] * self._num_sensors)
         self._transmission_frequencies = np.array([0, 1, 2, 4]) # possible transmit frequencies transmissions per second)
 
         # Initalize semaphores and events 
-        self._update_rates = threading.Semaphore(num_sensors) 
-        self._transmit_data_status = [threading.Event() for _ in range(num_sensors)]
-        self._ready_to_transmit = [threading.Event() for _ in range(num_sensors)]
+        #self._update_rates = threading.Semaphore(num_sensors) 
+        #self._transmit_data_status = [threading.Event() for _ in range(num_sensors)]
+        #self._ready_to_transmit = [threading.Event() for _ in range(num_sensors)]
 
-        self._update_rates_status = [threading.Event() for _ in range(num_sensors)]
-        for update_rate_status in self._update_rates_status:
-            update_rate_status.set()
-        self._bytes_received = [0 for _ in range(num_sensors)]
-        for transmit_status in self._transmit_data_status:
-            transmit_status.clear()
+        #self._update_rates_status = [threading.Event() for _ in range(num_sensors)]
+        #for update_rate_status in self._update_rates_status:
+        #    update_rate_status.set()
+        #self._bytes_received = [0 for _ in range(num_sensors)]
+        #for transmit_status in self._transmit_data_status:
+        #    transmit_status.clear()
 
         # Energy configuration
         self._full_energy = 100
-        self._recharge_time = 10
+        self._recharge_time = 10 * transmission_frame
         self._recharge_threshold = 20
-        self._energy = [self._full_energy for _ in range(num_sensors)]
+        self._energy = [self._full_energy for _ in range(self._num_sensors)]
 
         # Logs for tracking performance 
-        self.rate_log = [[] for _ in range(num_sensors)]
-        self.energy_log = [[] for _ in range(num_sensors)]
-        self.throughput_log = [[] for _ in range(num_sensors)]
+        self.rate_log = [[] for _ in range(self._num_sensors)]
+        self.energy_log = [[] for _ in range(self._num_sensors)]
+        self.throughput_log = [[] for _ in range(self._num_sensors)]
         self.reward_log = []
         self.clique_reward_log = []
         self.throughput_reward_log = []
@@ -351,7 +358,8 @@ class sensor_cluster():
                 self._datasets[i] = []
 
         self._create_topology()
-        
+
+
     """
     Send message from a sensor to the cluster head
 
@@ -382,7 +390,7 @@ class sensor_cluster():
         next_chunk_idx = 0
 
         # Port to communictae with cluser head on 
-        port = 5001 + sensor_id
+        port = 5001 + sensor_id + self._cluster_id*100
         
         # Initalize the sensors energy and the recharge count 
         energy = self._full_energy
@@ -392,6 +400,8 @@ class sensor_cluster():
         # Log the initial transmission rate
         self.rate_log[sensor_id].append(self.transmission_freq_idxs[sensor_id])
 
+        filler = 'G' * (self._transmission_size - 1) + '\n'
+
         while next_chunk_idx < len(chunks):
             # Recharge sensor if energy is below the recharge threshold
             if self._energy[sensor_id] < self._recharge_threshold:
@@ -400,7 +410,7 @@ class sensor_cluster():
                 rechar_time_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(recharge_time))
                 #print(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy {self._energy[sensor_id]} below threshold ({self._recharge_threshold}). Recharging...')
                 time.sleep(self._recharge_time)
-                next_chunk_idx += self._recharge_time // max(self._transmission_frequencies)
+                next_chunk_idx += (self._recharge_time / self._transmission_frame) // max(self._transmission_frequencies)
                                 
                 # Update the sensors energy and log the new energy level
                 self._energy[sensor_id] = self._full_energy
@@ -426,21 +436,21 @@ class sensor_cluster():
 
             if transmit_rate == 0:
                 next_chunk_idx += int(max(self._transmission_frequencies))
-                self._energy[sensor_id] -= 0.3
+                #self._energy[sensor_id] -= 0.3 * self._transmission_frame
                 #print(f"Sensor {sensor_id}: Skipped sending chunk {chunks_sent} due to rate 0 at {timestamp}.{ms:03d}\n")
 
-                time.sleep(1)
+                time.sleep(self._transmission_frame)
                 continue
 
             # Get the chunk to send
             info(f"next chunk idx: {next_chunk_idx}")
             chunk = chunks[int(next_chunk_idx)] 
-           
+         
             # Send chunk
-            #print(f"print {sensor_id}: Sending chunk {chunks_sent} of {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
-            cmd = f'echo "{chunk}" | nc -v -q 1 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
+            cmd = f'printf "{chunk}\n{filler[len(chunk):]}\n" | nc -v -w0 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
             sensor.cmd(cmd)
-            self._energy[sensor_id] -= 4 
+
+            #self._energy[sensor_id] -= 4 * self._transmission_frame 
             #print(f"Sensor {sensor_id}: Sent chunk {chunks_sent} of size {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
 
             chunks_sent += 1
@@ -448,7 +458,7 @@ class sensor_cluster():
             transmission_time = time.time() - transmission_start_time
             #print(f'Transmission time: {transmission_time}\n')
 
-            sleep_time = 1 / transmit_rate
+            sleep_time = self._transmission_frame / transmit_rate
             
             """
             Chunks correspond with data for units of time i.e. chunk[0] corresponds to time 0, chunk[1] corresponds to time 1, 
@@ -456,7 +466,7 @@ class sensor_cluster():
             next sleep_time seconds. All but the first of these chunks are not transmitted. 
             """
 
-            next_chunk_idx += (max(self._transmission_frequencies) * sleep_time) - 1
+            next_chunk_idx += (max(self._transmission_frequencies) / transmit_rate) - 1
             time.sleep(sleep_time)
 
         info(f"Sensor {sensor_id}: Finished sending messages\n")
@@ -483,12 +493,14 @@ class sensor_cluster():
             node.cmd(f'nc -n -vv -ul -p {5001 + i} -k >> {output_file} 2> {self._log_directory}/listen_err &')
 
             #node.cmd(f'echo "{listen_cmd}" | bash 2>> {self._log_directory}/listen_cmd_err.txt')
-            info(f"Receiver: Started listening on port {5001 + i} for sensor {i}\n")
+            info(f"Receiver: Started listening on port {5001 + i + self._cluster_id*100} for sensor {i}\n")
 
+        node.cmd("iw dev wlan0 set type monitor")
+        node.cmd("ifconfig wlan0 up")
         #capture the network by pcap
         pcap_file = f'{self._log_directory}/capture.pcap'
-        node.cmd(f'tcpdump -i {node.defaultIntf().name} -n udp portrange 5001-{5001+self._num_sensors-1} -U -w {pcap_file} &')
-        info(f"Receiver: Started tcpdump capture on ports 5001-{5001+self._num_sensors-1}\n")
+        node.cmd(f'tcpdump -i {node.defaultIntf().name} -n udp portrange {5001 + self._cluster_id*100}-{5001+self._num_sensors-1 + self._cluster_id*100} -U -w {pcap_file} &')
+        info(f"Receiver: Started tcpdump capture on ports 5001-{5001+self._num_sensors-1 + self._cluster_id*100}\n")
 
     """
     Kill netcat listining process for cluster head
@@ -529,7 +541,7 @@ class sensor_cluster():
             info("*** Starting senders\n")
             sender_threads = []
             listener_threads = []
-            ch_ip = '192.168.0.100'
+            ch_ip = f'192.168.{self._cluster_id}.100'
 
             for i, sensor in enumerate(self._sensors):
                 tcpdump_file = f'{self._log_directory}/tcpdump_sender_sensor{i}.pcap'

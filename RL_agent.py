@@ -13,6 +13,7 @@ from scipy.stats import poisson
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import threading
+import multiprocessing
 #import msgpack
 import matplotlib.pyplot as plt
 #from msgpack_numpy import patch as msgpack_numpy_patch
@@ -28,7 +29,7 @@ log_directory = "log"
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
     
-    def __init__(self, cluster_id, sensor_ids, device, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, threshold_prob=0.3):
+    def __init__(self, cluster_id, sensor_ids, device, observation_time=10, transmission_size=4*1024, transmission_frame=1, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, threshold_prob=0.3):
         super(WSNEnvironment, self).__init__()
 
         # Environment parameters
@@ -41,12 +42,12 @@ class WSNEnvironment(gym.Env):
         self.alpha=0.6
         self.beta=0.3
         self.observation_time = observation_time 
-        self._cluster = sensor_cluster(cluster_id, sensor_ids, log_directory=f'data/c{cluster_id}/log', data_offset=cluster_id, observation_time=self.observation_time, transmission_size=transmission_size, file_lines_per_chunk=file_lines_per_chunk)
+        self._cluster = sensor_cluster(cluster_id, sensor_ids, log_directory=f'data/c{cluster_id}/log', data_offset=cluster_id, observation_time=self.observation_time, transmission_size=transmission_size, transmission_frame=transmission_frame, file_lines_per_chunk=file_lines_per_chunk)
         self._device = device
 
         print("Starting cluster\n")
-        cluster_thread = threading.Thread(target=self._cluster.start, args=())
-        cluster_thread.start()
+        cluster_process = multiprocessing.Process(target=self._cluster.start, args=())
+        cluster_process.start()
         # Give cluster thread time to start
         time.sleep(10)
         print("Done waiting for cluster to start")
