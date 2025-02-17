@@ -167,7 +167,6 @@ class sensor_cluster():
         G = nx.Graph()
 
         print(f'Awake sensors: {awake_sensors}')
-        print(f'Temp data: {temperature_data}')
         
         for i in range(self._num_sensors):
             G.add_node(i)
@@ -288,7 +287,7 @@ class sensor_cluster():
         self._num_sensors = len(sensor_ids)
         self._similarity_threshold = 1
         self._throughputs = [0 for i in range(self._num_sensors)]
-        self._chunks_to_send = 10000
+        self._chunks_to_send = 100000
         self._observation_time = observation_time # The number of seconds between each observation
         self._max_throughput = 0
         self._max_total_throughput = 0

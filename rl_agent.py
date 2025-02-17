@@ -84,8 +84,8 @@ class DQN(nn.Module):
         return x
 
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001):
-        self._env = [WSNEnvironment(max_steps=100, sampling_freq=sampling_freq, cluster_id=i, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame=transmission_frame, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=0.2, device=device) for i in range(num_clusters)]
+    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001, recharge_thresh=0.2):
+        self._env = [WSNEnvironment(max_steps=100, sampling_freq=sampling_freq, cluster_id=i, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame=transmission_frame, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device) for i in range(num_clusters)]
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq
         self._state, self._info = [list(t) for t in zip(*[env.reset() for env in self._env])]
@@ -93,6 +93,13 @@ class WSN_agent:
         self._recharge_thresh = 0.2
         self._update_lock = threading.Lock()
         self._num_clusters = num_clusters
+
+        self._transmission_frame = transmission_frame
+        self._sensor_ids = sensor_ids
+        self._observation_time = observation_time
+        self._transmission_size = transmission_size
+        self._file_lines_per_chunk = file_lines_per_chunk
+        self._recharge_thresh = recharge_thresh
 
         num_actions = self._env[0].action_space.shape[0] # All envs have the same action and observation space
         self._policy_net = DQN(sampling_freq, self._n_observations, num_actions, self._num_sensors).to(device)
@@ -146,19 +153,20 @@ class WSN_agent:
         return action
 
     def select_best_action(self):
-        energy = self._state[:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
+        energy = self._state[0][:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
         energy = energy.squeeze()
         dead_sensors = (energy <= self._recharge_thresh)
         awake_sensors = (energy > self._recharge_thresh)
 
         print('Getting best action')
         with torch.no_grad():
-            action_values = self._policy_net(self._state)
+            action_values = self._policy_net(self._state[0])
+            action_values= action_values.view(1, self._num_sensors, 4)
             action_probs = F.softmax(action_values, dim=-1)
             action = torch.argmax(action_probs, dim=-1)
             action = action.squeeze(0)
 
-        self._steps_done += 1
+        self._steps_done[0] += 1
         action[dead_sensors] = 0
         action[awake_sensors & (action==0)] = 1
 
@@ -363,18 +371,21 @@ class WSN_agent:
 
         print('Complete; validating')
         validate_ep = 0
+        test_env = WSNEnvironment(max_steps=100, sampling_freq=self._sampling_freq, cluster_id=2, sensor_ids=self._sensor_ids, observation_time=self._observation_time, transmission_size=self._transmission_size, transmission_frame=self._transmission_frame, file_lines_per_chunk=self._file_lines_per_chunk, recharge_thresh=self._recharge_thresh, device=device)
+        self._steps_done[0] = 0
+
         while True:
             print(f'Episode: {validate_ep}') 
             # Initialize the environment and get its state
-            self._state, self._info = self._env[0].reset()
-            self._state = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
+            self._state[0], self._info[0] = test_env.reset()
+            self._state[0] = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
 
             for t in count():
                 print(f'Step: {t}')
                 action = self.select_best_action()
 
-                observation, reward, terminated, truncated, _ = self._env.step(self._steps_done, action.numpy())
-                self._rewards.append(reward)
+                observation, reward, terminated, truncated, _ = test_env.step(self._steps_done[0], action.numpy())
+                self._rewards[0].append(reward)
                 
                 reward = torch.tensor([reward], device=device)
                 done = terminated or truncated
@@ -385,10 +396,10 @@ class WSN_agent:
                     next_state = torch.tensor(observation, dtype=torch.float32, device=device).unsqueeze(0)
 
                 # Store the transition in memory
-                self._memory.push(self._state, action, next_state, reward)
+                self._memory.push(self._state[0], action, next_state, reward)
 
                 # Move to the next state
-                self._state = next_state
+                self._state[0] = next_state
 
                 # Perform one step of the optimization (on the policy network)
                 self._optimize_model()
@@ -425,5 +436,5 @@ class WSN_agent:
 
 if __name__ == '__main__':
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=2, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame=1/16, file_lines_per_chunk=1, observation_time=10)
+    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame=1/16, file_lines_per_chunk=1, observation_time=10)
     agent.start()
