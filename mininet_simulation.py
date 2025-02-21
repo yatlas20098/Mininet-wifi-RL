@@ -191,19 +191,12 @@ class sensor_cluster():
         
         print(f'Throughputs (Kib/s) : {self._throughputs}')
         print(f'Total throughput over observation: {np.sum(self._throughputs)} KiB/s')
-        #print(f'Maximum attainable throughput for a sensor (Kib/s): {max_throughput}')
-        #print(f'Maximum attainable throughput all sensors (Kib/s): {self._max_throughput}')
 
         # Get a maximal clique cover for G
         maximal_clique_cover = list(maximal_cliques(G)) 
         print(f'maximal_clique_cover: {maximal_clique_cover}')
         print(f'Max throughput in clique: {[max([self._throughputs[node] for node in clique]) for clique in maximal_clique_cover]}')
 
-        # Reward high throughput of non-redudant data
-        #max_clique_throughputs = [max([self._throughputs[node] / (max_throughput) for node in clique]) for clique in maximal_clique_cover] 
-        #reward = 0.5 * (np.median(max_clique_throughputs) - 1)
-        #reward += 0.5 * ((np.sum(self._throughputs) / (self._num_sensors * max_throughput)) - 1)
-        
         max_clique_throughputs = [max([self._throughputs[node] / (self._max_throughput) for node in clique]) for clique in maximal_clique_cover] 
         clique_throughput_reward = 0.5 * (np.median(max_clique_throughputs) - 1)
         throughput_reward = 0.5 * ((np.sum(self._throughputs) / (self._max_total_throughput)) - 1)
@@ -234,18 +227,18 @@ class sensor_cluster():
     Create Mininet topology
     """
     def _create_topology(self):
-        #build network
+        # build network
         self._net = Mininet_wifi(controller=Controller, link=wmediumd, wmediumd_mode=interference)
 
         info("*** Creating nodes\n")
-        #create accesspoint
-        ap = self._net.addAccessPoint(f'ap23', ssid=f'new-ssid', mode='g', channel='5', position='50,50,0', cpu=1, mem=1024*2)
+        # create accesspoint
+        self._net.addAccessPoint(f'ap23', ssid=f'new-ssid', mode='g', channel='5', position='50,50,0', cpu=1, mem=1024*2)
        
         #create cluster head
         self._cluster_head = self._net.addStation(f'ch', ip=f'192.168.0.100/24',
                                       range='150', position='30,30,0', cpu=1, mem=1024*2)
 
-        #create 10 sensors
+        #create 
         self._sensors = []
         for i in range(self._num_sensors):
             ip_address = f'192.168.0.{i + 1}/24'
@@ -256,6 +249,10 @@ class sensor_cluster():
 
         info("*** Configuring wifi nodes\n")
         self._net.configureWifiNodes()
+
+        self._net.build()
+        self._net.start()
+
 
     def __init__(self, sensor_ids, transmission_size=2*1024, transmission_frame_duration=1, num_transmission_frames=10000, observation_time=10, file_lines_per_chunk=10, log_directory='data/log', dataset_directory='data/towerdataset'):
         # Simulation parameters 
@@ -341,7 +338,7 @@ class sensor_cluster():
             return
         
         # Create a file to store the packets received by the cluster head
-        sensor.cmd(f'touch {self._log_directory}/ch_received_data/sensor_{sensor_idx}_log.txt')
+        sensor.cmd(f'touch {self._log_directory}/ch_received_data/sensor_{self._sensor_ids[sensor_idx]}.txt')
        
         # Track the number of chunks sent 
         chunks_sent = 0
@@ -405,8 +402,10 @@ class sensor_cluster():
             chunk = chunks[int(next_chunk_idx)] 
          
             # Send the chunk (with filler to pad the chunk to the correct length)
-            cmd = f'printf "{chunk}\n{filler[len(chunk):]}\n" | nc -v -w0 -u {ch_ip} {port} >> error/nc{sensor_idx} 2>&1 &'
+            cmd = f'printf "{chunk}\n{filler[len(chunk):]}\n" | nc -v -q0 -u {ch_ip} {port} >> {self._log_directory}/error/nc{sensor_idx} 2>&1 &'
             sensor.cmd(cmd)
+
+            
 
             chunks_sent += 1
 
@@ -443,8 +442,7 @@ class sensor_cluster():
             node.cmd(f'touch {output_file}')
 
             # Create a listener for sensor i 
-            node.cmd(f'nc -n -vv -ul -p {5001 + i} -k >> {output_file} 2> {self._log_directory}/listen_err &')
-
+            node.cmd(f'nc -n -vv -ul -p {5001 + i} -k >> {output_file} 2> {self._log_directory}/error/listen_err &')
             info(f"Receiver: Started listening on port {5001 + i} for sensor {i}\n")
 
         # Capture the network by pcap
@@ -470,9 +468,7 @@ class sensor_cluster():
     """
     def start(self):
         print("STARTING")
-        self._net.build()
-        self._net.start()
-
+        
         info("*** Setting up communication flow\n")
         try:
             info("*** Starting receivers\n")
@@ -494,7 +490,7 @@ class sensor_cluster():
             ch_ip = f'192.168.0.100'
 
             for i, sensor in enumerate(self._sensors):
-                tcpdump_file = f'{self._log_directory}/tcpdump_sender_sensor{i}.pcap'
+                tcpdump_file = f'{self._log_directory}/pcaps/tcpdump_sender_sensor{i}.pcap'
                 sensor.cmd(f'tcpdump -i s{i}-wlan0 -w {tcpdump_file} &')
                 
                 thread = threading.Thread(target=self._send_messages_to_cluster_head, args=(sensor, ch_ip, i))
