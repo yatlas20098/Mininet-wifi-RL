@@ -46,7 +46,7 @@ def convert_to_KB(throughput):
             return 0
     return 0
 
-"""Extract the latest throughput from the file."""
+"""Extract the latest throughput from file."""
 def get_latest_throughput(filename):
     with open(filename, 'r') as f:
         lines = f.readlines()
@@ -81,146 +81,104 @@ class sensor_cluster():
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
 
-            self._throughputs[sensor_id] = bytes_received / 1024
-
         return np.array(data)
 
     """
-    Split dataset into chunks
+    Split dataset into chunks. A chunk corresponds to a transmissions worth of data.
+    Note: The chunks returned must be padded before transmission to the correct size.
 
     Args:
         dataset_dir (string): Path to dataset file
+        sensor_id (int): ID of the sensor associcated to the dataset file
+        file_lines_per_transmission (int): How many file lines to include per transmission 
 
     Returns:
         String List: List of chunks 
     """
-    def _preprocess_dataset_into_chunks(self, dataset_dir, sensor_id):
+
+    def _preprocess_dataset_into_chunks(self, dataset_dir, sensor_id, file_lines_per_chunk, data_offset):
         # Cache the dataset into memory 
         with open(dataset_dir, 'r') as file:
             lines = file.readlines()
 
-        # Get number of lines in file 
+        # Get the number of lines in the file 
         file_size = len(lines)
 
-        # Pad each line to have size packet size
-        #for i in range(file_size):
-        #    if len(lines[i]) < self._packet_size:
-        #        lines[i] = lines[i] + 'G' * (self._packet_size - len(lines[i]) - 1) + '\n' 
+        # Get the number of chunks the data set can split into
+        num_chunks_in_file = file_size // file_lines_per_chunk
 
-        if file_size < self._chunks_to_send:
-            print('The number of chunks to send must be decreased; not enough data')
+        if num_chunks_in_file < self._chunks_to_send:
+            print('The number of chunks to send or the number of file lines per chunk must be decreased; not enough data')
 
-        #file_lines_per_chunk = file_size // self._chunks_to_send
-        file_lines_per_chunk = 10
-        print(f'{file_lines_per_chunk} file lines per chunk')
-
-        # Get the number of bytes in each chunk
-        #chunk_size = int(max(self._rate_frequencies) * self._observation_time * 1024) # Convert from KB to bytes
-
+        # Split file into chunks
         chunks = [lines[i:i + file_lines_per_chunk] for i in range(0, len(lines), file_lines_per_chunk)]
-        chunks = [''.join(chunk) for chunk in chunks]
-        #for i in range(len(chunks)):
-        #    subprocess.run(["rm", "-rf", f"tmp/chunks{sensor_id}"])
-        #    os.makedirs(f'tmp/chunks{sensor_id}')
-        #    with open(f'tmp/chunks{sensor_id}/chunk{i}','w') as f:
-        #            f.write(chunks[i])
+        chunks = [''.join(chunk) for chunk in chunks[data_offset*self._chunks_to_send: (data_offset + 1) * self._chunks_to_send]]
 
-        #filler_packet = 'G' * self._packet_size 
-        #for i in range(chunks_to_send):
-        #    num_filler_bytes = chunk_size - sum([len(line) for line in chunks[i]])
-        #    num_filler_packets = num_filler_bytes // self._packet_size
+        # Pad chunks to correct size
+        filler = 'G' * (self._transmission_size - 1) + '\n'
+        chunks = [chunk + filler[len(chunks):] for chunk in chunks]
 
-        #    for j in range(num_filler_packets):
-        #        chunks[i].append(filler_packet)
-
-        #    if i % 100 == 0:
-        #        print(f'Processed chunk {i} out of {chunks_to_send}')
-
-        """
-        # Get how many packets the file should be split into
-        num_packets = math.ceil(file_size / self._packet_size)
-        print(f'Number of packets: {num_packets}\n')
-
-        # Get how many file lines each packet should have 
-        lines_per_packet = len(lines) // num_packets
-        if lines_per_packet == 0:
-            print('Packet size must be increased\n')
-        print(f'{lines_per_packet} lines per packet')
-
-        # Split the file into packets
-        packets = [lines[i:i + 1] for i in range(0, len(lines), 1)]
-        packet_data = [''.join(packet) for packet in packets]
-
-        # Group packets together into chunks to be transmitted 
-        print(f'Chunk size: {chunk_size}')
-        if chunk_size < self._packet_size:
-            chunk_size = self._packet_size 
-        num_chunks = math.ceil(file_size / chunk_size)
-        packets_per_chunk = num_packets // num_chunks
-        print(f'Number of chunks: {num_chunks}\n')
-
-        return [packet_data[i:i + packets_per_chunk] for i in range(0, num_packets, packets_per_chunk)]
-        """
         return chunks
+   
+    """
+    Get an observation for the scheduler.
 
-    def _get_agent_obs(self):
+    Returns:
+        tuple: (rates_id, similarity, energy, throughputs, reward)
+            rates_id - ID of rates used during the observation
+            similarity - num_sensor x num_sensor matrix where entry i,j denotes wheter the data generated by sensor i was similar to the data generated by sensor j
+            energy - percent of energy remaining for each sensor
+            throughputs - vector of average throughput for each sensor
+            reward - reward according to reward function
+    """
+
+    def get_obs(self):
         print('\n\nGetting observation')
+
+        # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = {}
-        awake_sensors = []
-        data_arrived = False 
 
         for i in range(self._num_sensors):
+            # Name of file where transmisions recieived by the cluster head from sensor i is stored
             file_name = f'ch_received_from_sensor_{self._sensor_ids[i]}.txt'
 
             # Create a copy of the original file
             subprocess.run(["cp", f'{self._log_directory}/{file_name}', f'{self._log_directory}/.{file_name}'])
             file_path = os.path.join(self._log_directory, f'.{file_name}')
 
-            # Clear the file
+            # Clear the file for future transmissions
+            # TODO: Lock before clearing?
             with open(f'{self._log_directory}/{file_name}', 'r+') as file:
                 file.truncate(0)
             
-            # Get the temperature data
+            # Read the temperature data for sensor i from the copied file
             sensor_data = self._read_temperature_data(file_path, i)
             if len(sensor_data) > 0:
                 temperature_data[i] = sensor_data
-                awake_sensors.append(i)
                 data_arrived = True
-            # Skip sending observation if no data was observered
-            # else:
-            #    return
 
-        #throughput = [0 for _ in range(self._num_sensors)]
         similarity = np.zeros((self._num_sensors, self._num_sensors))
         reward = 0
 
-        if len(awake_sensors) > 0:
-            min_length = min(len(temperature_data[sensor]) for sensor in awake_sensors)
-
-        # Truncate all arrays to the shortest length
-        temperature_data = {sensor: data[:min_length] for sensor, data in temperature_data.items()}
-
-        # Get the number of sensors that generated data
-        n_sensors_awake = len(awake_sensors)
-
+        awake_sensors = temperature_data.keys()
+         
         # Create a graph with veritices representing sensors and edges denoting similarity
         G = nx.Graph()
 
         print(f'Awake sensors: {awake_sensors}')
-        #self._throughputs = [0 for i in range(self._num_sensors)]
         
         for i in range(self._num_sensors):
             G.add_node(i)
+            self._throughputs[i] = 0 
 
-            # throughput_file = f'{self._log_directory}/sensor_{self._sensor_ids[i]}_throughput.txt'
-            # Convert throughput from KB received to KB received / s
-            self._throughputs[i] /= ((self._observation_time) * 3) 
+        for i in range(len(awake_sensors)):
+            # Get the average throughput in KiB/s 
+            self._throughputs[i] = len(temperature_data[i]) / 1028 / self._observation_time
 
-        for i in awake_sensors:
-            print(f'Sensor{self._sensor_ids[i]} temp: {temperature_data[i][0]}')
-            for j in awake_sensors:
-                similarity[i,j] = int(all(abs(a - b) <= self._similarity_threshold for a,b in zip(temperature_data[i], temperature_data[j])))
-                if similarity[i,j] == 1 and not i == j:
+            for j in range(i + 1, len(awake_sensors)):
+                # TODO: Currently only using first data point for similiarity; need to add timestamps to data for more robust similarity checking
+                similarity[i,j] = int(temperature_data[i][0] - temperature_data[j][0] <= self._similarity_threshold)
+                if similarity[i,j] == 1:
                     print(f'Node {i} ~ Node {j}')
                     G.add_edge(i,j)
             
@@ -236,7 +194,6 @@ class sensor_cluster():
         maximal_clique_cover = list(maximal_cliques(G)) 
         print(f'maximal_clique_cover: {maximal_clique_cover}')
         print(f'Max throughput in clique: {[max([self._throughputs[node] for node in clique]) for clique in maximal_clique_cover]}')
-
 
         # Reward high throughput of non-redudant data
         #max_clique_throughputs = [max([self._throughputs[node] / (max_throughput) for node in clique]) for clique in maximal_clique_cover] 
@@ -265,18 +222,9 @@ class sensor_cluster():
         self.reward_log.append(reward)
         self.clique_reward_log.append(clique_throughput_reward)
         self.throughput_reward_log.append(throughput_reward)
-
         
-        obs = pickle.dumps((self._rates_id, similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward))
-
-        # Send the size of the observation in bytes to the server.
-        obs_length = len(obs)
-        self._server.sendall(struct.pack('!I', obs_length))
-
-        # Send the observation to the server.
-        self._server.sendall(obs)
-        print('Sent observation to server\n\n')
-
+        return (self._rates_id, similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward)
+    
     """
     Create Mininet topology
     """
@@ -316,39 +264,18 @@ class sensor_cluster():
 
             self._net.setPropagationModel(model='logDistance', exp=2)
 
-    """
-    Creates a socket between the server and cluster head. To avoid networking complications with an HPC firewall, the HPC server approaches the cluster head when creating a connection.   
-    """
-    def _establish_server_connection(self):
-        # TODO: Create UDP socket for sending message to server and TCP socket for receiving messages from server 
-        listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        print("Socket succesfully created")
-        listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listen_port = 5000 + self._cluster_id
-        listen.bind(("0.0.0.0", port))
-        print(f'Socket binded to {port}')
-
-        listen.listen(5)
-        print("Socket is listening")
-
-        server, addr = listen.accept()
-        print('Got connection from', addr)
-
-        self._server = server
-        #self._server.settimeout(0)
-
-    def __init__(self, cluster_id, sensor_ids, server_ip, server_port, num_sensors=10, packet_size=2*1024, log_directory='data/log', dataset_directory='data/towerdataset'):
+    def __init__(self, cluster_id, sensor_ids, server_ip, server_port, num_sensors=10, transmission_size=2*1024, log_directory='data/log', dataset_directory='data/towerdataset', data_offset=0):
         # Connection and configuration parameters
         self._cluster_id = cluster_id
         self._server_ip = server_ip
         self._server_port = server_port
-        self._packet_size = int(packet_size) # in bytes
+        self._transmission_size = transmission_size # in bytes
         self._sensor_ids = sensor_ids
         self._num_sensors = len(sensor_ids)
         self._similarity_threshold = 1
         self._throughputs = [0 for i in range(num_sensors)]
         self._chunks_to_send = 2000
-        self._observation_time = 0.1 # The number of seconds between each observation
+        self._observation_time = 10 # The number of seconds between each observation
 
         # Directories
         self._log_directory = log_directory
@@ -357,10 +284,8 @@ class sensor_cluster():
        
         # Rate configuration
         self._rates_id = 0
-        self._rates = [2] * num_sensors
-        #self._rate_frequencies = np.array([0, 10, 20, 30]) # Rate frequencies in KB
-        self._rate_frequencies = np.array([0, 0.05, 0.2, 0.5])
-        self._max_throughput = 1 # In KB/S
+        self._transmission_freq_idxs = [2] * num_sensors
+        self._transmission_frequencies = np.array([0, 1, 2, 4]) # possible transmit frequencies transmissions per second)
 
         # Initalize semaphores and events 
         self._update_rates = threading.Semaphore(num_sensors) 
@@ -374,7 +299,6 @@ class sensor_cluster():
         for transmit_status in self._transmit_data_status:
             transmit_status.clear()
 
-       
         # Energy configuration
         self._full_energy = 100
         self._recharge_time = 1
@@ -388,7 +312,6 @@ class sensor_cluster():
         self.reward_log = []
         self.clique_reward_log = []
         self.throughput_reward_log = []
-
 
         self.clique_log = []
 
@@ -411,22 +334,12 @@ class sensor_cluster():
             tower_number = i + 2  # Start from tower2 
             file_path = f'{dataset_directory}/tower{tower_number}Data_processed.csv'
             if os.path.exists(file_path):
-                self._datasets[i] = self._preprocess_dataset_into_chunks(file_path, i)
+                self._datasets[i] = self._preprocess_dataset_into_chunks(file_path, i, file_lines_per_chunk, data_offset)
                 self._datasets[i] = self._datasets[i] + self._datasets[i]
             else:
                 print(f"Warning: Dataset file not found for sensor {i}: {file_path}")
                 self._datasets[i] = []
 
-        #print(f'Dataset: {self._datase}')
-        # Find the length of the shortest dataset 
-        min_length = min(len(chunks) for chunks in self._datasets.values())
-
-        # Truncate all chunks to the shortest length
-        # Duplicaite for more data
-        # for i in range(self._num_sensors):
-        #    self._datasets[i] = self._datasets[i][:min_length] + self._datasets[i][:min_length]
-        
-        self._establish_server_connection()
         self._create_topology()
         
     def _receive_rates_from_server(self):
@@ -505,132 +418,91 @@ class sensor_cluster():
             info(f"Sensor {sensor_id}: No data available. Skipping send_messages.\n")
             return
         
-        packetnumber = 0
-        port = 5001 + sensor_id
-
-        # Create a file to track the packets received by the cluster head
+        # Create a file to store the packets received by the cluster head
         sensor.cmd(f'touch {self._log_directory}/sensor_{sensor_id}_log.txt')
        
         # Track the number of chunks sent 
         chunks_sent = 0
+
+        # Index of the next chunk to send 
+        next_chunk_idx = 0
+
+        # Port to communictae with cluser head on 
+        port = 5001 + sensor_id
         
         # Initalize the sensors energy and the recharge count 
         energy = self._full_energy
         charge_count = 0
 
         # Log the initial transmission rate
-        self.rate_log[sensor_id].append(self._rates[sensor_id])
+        self.rate_log[sensor_id].append(self._transmission_freq_idxs[sensor_id])
 
-        filler_packet = 'G' * (self._packet_size - 1) + '\n' 
-
-        while chunks_sent < len(chunks):
+        while next_chunk_idx < len(chunks):
             # Recharge sensor if energy is below the recharge threshold
             if self._energy[sensor_id] < self._recharge_threshold:
                 charge_count += 1
                 recharge_time = time.time()
                 rechar_time_stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(recharge_time))
                 info(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy below threshold ({self._recharge_threshold}). Recharging...\n')
+                time.sleep(self._recharge_time)
+                next_chunk_idx += self._recharge_time // min(self._transmission_frequencies)
                                 
-                for _ in range(self._recharge_time):
-                    # Wait for rate update
-                    self._update_rates_status[sensor_id].wait()
-                    self._update_rates_status[sensor_id].clear()
-
-                    # Allow other sensors to transmit data 
-                    self._ready_to_transmit[sensor_id].set()
-
-                    file_name = f'ch_received_from_sensor_{self._sensor_ids[sensor_id]}.txt'
-                    # Clear the file
-                    # with open(f'{self._log_directory}/{file_name}', 'r+') as file:
-                    #    file.truncate(0)
-
-                    time.sleep(self._observation_time)
-
-                    # Discard chunk that should have been sent during the recharge time
-                    chunks_sent += 1
-
-                    # Allow the transmission rate to update
-                    self._transmit_data_status[sensor_id].set()
-                    
                 # Update the sensors energy and log the new energy level
                 self._energy[sensor_id] = self._full_energy
                 sensor.energy = energy
 
                 info(f'Cluster {self._cluster_id}, Sensor {sensor_id}: Energy Recharged to full energy ({self._full_energy}), Current time: {recharge_time}, Charge Count: {charge_count}. Resuming operations.\n')
                 
-                if chunks_sent >= len(chunks):
+                if next_chunk_idx >= len(chunks):
                     self._transmit_data_status[sensor_id].set()
                     break
 
             # Check for rate update before transmitting the next chunck
-            self._update_rates_status[sensor_id].wait()
-            self._update_rates_status[sensor_id].clear()
+            #self._update_rates_status[sensor_id].wait()
+            #self._update_rates_status[sensor_id].clear()
 
             # Get the current transmission rate
-            transmit_rate = self._rate_frequencies[self._rates[sensor_id]] * self._max_throughput
-            #rate = chunks_sent % len(self._rate_frequencies)
-
-            # Get the chunk to send
-            chunk = chunks[chunks_sent]
-            #chunk = chunk + 'G'*(int(self._rate_frequencies[rate] * 1024 * self._observation_time - len(chunk)))
-            chunk = chunk + 'G' * int(transmit_rate * 1024 * self._observation_time - len(chunk)) 
-
-
-            #chunk_str = chunk + 'G'*
-
-            # Add filler to file lines so that they have size self._packet_size
-            #chunk = [packet + 'G'*(self._packet_size - len(packet)) for packet in chunk]
-
-            #packets_to_send = int(self._rate_frequencies[rate] * 1024 * self._observation_time // self._packet_size)
-            
-            # Add filler packets
-            #while len(chunk) < packets_to_send:
-            #    chunk += filler_packet
-               
-            file_name = f'ch_received_from_sensor_{self._sensor_ids[sensor_id]}.txt'
-            
-
-            # Wait until all other sensors are able to transmit
-            self._ready_to_transmit[sensor_id].set()
-            for transmit_status in self._ready_to_transmit:
-                transmit_status.wait()
-
-            # Clear the file
-            #with open(f'{self._log_directory}/{file_name}', 'r+') as file:
-            #    file.truncate(0)
+            transmit_rate = self._transmission_frequencies[self._transmission_freq_idxs[sensor_id]] 
 
             # Store the current time
             transmission_start_time = time.time()
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(transmission_start_time))
             ms = int((transmission_start_time - time.time()) * 1000)
 
-            bytes_to_transmit = int(transmit_rate * 1024 * self._observation_time)
-            with open(f'tmp/chunk{sensor_id}.txt','w') as f:
-                f.write(chunk[:bytes_to_transmit])
-
-            # Send the current chunck if the frequency rate is > 0 
-            if self._rate_frequencies[self._rates[sensor_id]] > 0:
-                info(f"Sensor {sensor_id}: Sending chunk {chunks_sent} of {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
-                cmd = f'cat tmp/chunk{sensor_id}.txt | nc -v -q 1 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
-                sensor.cmd(cmd)
-
-                self._energy[sensor_id] -= 4 * transmit_rate / max(self._rate_frequencies) / self._max_throughput / 3
-                info(f"Sensor {sensor_id}: Sent chunk {chunks_sent} of size {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
-            else:
-                self._energy[sensor_id] -= 0.3 / 3 
+            if transmit_rate == 0:
+                next_chunk_idx += int(max(self._transmission_frequencies))
+                self._energy[sensor_id] -= 0.3
                 info(f"Sensor {sensor_id}: Skipped sending chunk {chunks_sent} due to rate 0 at {timestamp}.{ms:03d}\n")
+
+                time.sleep(1)
+                continue
+
+            # Get the chunk to send
+            info(f"next chunk idx: {next_chunk_idx}")
+            chunk = chunks[int(next_chunk_idx)] 
+           
+            # Send chunk
+            info(f"Sensor {sensor_id}: Sending chunk {chunks_sent} of {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
+            cmd = f'{chunk} | nc -v -q 1 -u {ch_ip} {port} >> tmp/nc{sensor_id} 2>&1 &'
+            sensor.cmd(cmd)
+            self._energy[sensor_id] -= 4 
+            info(f"Sensor {sensor_id}: Sent chunk {chunks_sent} of size {(len(chunk) / 1024):.2f} KiB at {timestamp}.{ms:03d}\n")
 
             chunks_sent += 1
 
-            info(f'Sent {bytes_to_transmit/1024} KiB at {transmit_rate} KiB/s\n')
             transmission_time = time.time() - transmission_start_time
             info(f'Transmission time: {transmission_time}\n')
 
-            if transmission_time < self._observation_time:
-                time.sleep(self._observation_time - transmission_time)
+            sleep_time = 1 / transmit_rate
+            
+            """
+            Chunks correspond with data for units of time i.e. chunk[0] corresponds to time 0, chunk[1] corresponds to time 1, 
+            and so on. (max(self._transmission_rates) * sleep_time) corresponds to the number of chunks corresponding to the 
+            next sleep_time seconds. All but the first of these chunks are not transmitted. 
+            """
 
-            # Allow the transmission rate to update
-            self._transmit_data_status[sensor_id].set()
+            next_chunk_idx += (max(self._transmission_frequencies) * sleep_time) - 1
+            time.sleep(sleep_time)
 
         info(f"Sensor {sensor_id}: Finished sending messages\n")
         self._transmit_data_status[sensor_id].set()
@@ -750,23 +622,9 @@ class sensor_cluster():
 
             time.sleep(self._observation_time)
            
-            rates_thread = threading.Thread(target=self._receive_rates_from_server, args=())
-            rates_thread.start()
-
             # Give cluster head time to receive data
             time.sleep(2 * self._observation_time)
-            transfer_thread = threading.Thread(target=self._transfer_received_data, args=())
-            transfer_thread.start()
 
-            """
-            time.sleep(40)
-            self._plot_energy()
-            self._plot_throughput()
-            self._plot_rates(3)
-            self._create_plot(self, self.rewards, 'rewards', self.timestaps, 'Time (seconds)', 'Reward', 'Reward over Time')
-            self._create_plot(self, self.similarity, 'Similarity Penalty', self.timestaps, 'Time (seconds)', 'Penalty', 'Similarity Penalty over Time')
-            """
-            
             for thread in sender_threads:
                 thread.join()
 
@@ -984,11 +842,10 @@ class sensor_cluster():
         print(f"Total execution time: {time.time() - overall_start_time:.2f} seconds")
     """
 
-if __name__ == '__main__':
-    setLogLevel('info')
-    server_ip = '192.168.20.201'
-    #server_ip = '127.0.0.1'
-    port = 5000
-    sensor_ids = range(5, 15)
-    cluster = sensor_cluster(1, sensor_ids, server_ip, port, packet_size=1472*1)
-    cluster.start()
+#if __name__ == '__main__':
+#    setLogLevel('info')
+#    cluser_id = 0 
+#    sensor_ids = range(5, 15)
+#    cluster = sensor_cluster(1, sensor_ids, server_ip, port, log_director=f'data/c{cluster_id}/log')
+#    cluster.start()
+
