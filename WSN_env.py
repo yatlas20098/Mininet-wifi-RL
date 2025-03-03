@@ -29,7 +29,7 @@ from mininet_simulation import sensor_cluster
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
     
-    def __init__(self, sensor_ids, device, observation_time=10, transmission_size=4*1024, transmission_frame_duration=1, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, threshold_prob=0.3):
+    def __init__(self, sensor_ids, device, observation_time=10, transmission_size=4*1024, transmission_frame_duration=1, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, num_episodes=10, threshold_prob=0.3):
         super(WSNEnvironment, self).__init__()
 
         # Environment parameters
@@ -41,9 +41,13 @@ class WSNEnvironment(gym.Env):
         self.recharge_thresh=recharge_thresh
         self.alpha=0.6
         self.beta=0.3
-        self.observation_time = observation_time 
-        self._cluster = sensor_cluster(sensor_ids, log_directory=f'data/log', observation_time=self.observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk)
+        self.observation_time = observation_time
+        num_transmission_frames = 1*((max_steps * num_episodes * observation_time) // transmission_frame_duration) + 1000 # include extra frames as buffer
+
+        self._cluster = sensor_cluster(sensor_ids, log_directory=f'data/log', observation_time=self.observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, num_transmission_frames=num_transmission_frames)
         self._device = device
+
+        self.step_log = []
 
         print("Starting cluster\n")
         cluster_process = multiprocessing.Process(target=self._cluster.start, args=())
@@ -53,7 +57,7 @@ class WSNEnvironment(gym.Env):
         print("Done waiting for cluster to start")
 
         # Define observation space
-        self.observation_space = spaces.Box(low=0, high=1, shape=(self.num_sensors*self.num_sensors + 2*self.num_sensors,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=1, shape=(self.num_sensors*self.num_sensors + 3*self.num_sensors,), dtype=np.float32)
 
         self.sampling_freq = sampling_freq
 
@@ -83,10 +87,10 @@ class WSNEnvironment(gym.Env):
         for i in range(self.num_sensors):
             self.info['sensor ' + str(i)] = set()
 
-        similarity, energy_data, throughputs, reward = self._cluster.get_obs()
+        similarity, energy_data, throughputs, reward, rates = self._cluster.get_obs()
         time.sleep(self.observation_time)
-        similarity, energy_data, throughputs, reward = self._cluster.get_obs()
-        self._state = np.concatenate([similarity.flatten(), energy_data, throughputs])
+        similarity, energy_data, throughputs, reward, rates = self._cluster.get_obs()
+        self._state = np.concatenate([similarity.flatten(), energy_data, throughputs, rates])
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
 
         return self._state, self.info
@@ -102,10 +106,9 @@ class WSNEnvironment(gym.Env):
         # Check termination condition
         if truncated:
             terminated = True
-            print(self.sensor_information, reward, terminated, truncated, self.info)
             self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
             return self._state, reward, terminated, truncated, self.info
-       
+
         for i in range(len(action)):
             self._cluster.transmission_freq_idxs[i] = action[i]
 
@@ -115,8 +118,8 @@ class WSNEnvironment(gym.Env):
         print('Returning reward')
         self.step_count += 1
        
-        similarity, energy_data, throughputs, reward = self._cluster.get_obs()
-        self._state = np.concatenate([similarity.flatten(), energy_data, throughputs])
+        similarity, energy_data, throughputs, reward, rates = self._cluster.get_obs()
+        self._state = np.concatenate([similarity.flatten(), energy_data, throughputs, rates])
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
 
         return self._state, reward, terminated, truncated, self.info

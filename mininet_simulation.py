@@ -29,39 +29,6 @@ from mn_wifi.wmediumdConnector import interference
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-
-"""Convert throughput from KiB, MiB, B to KB."""
-def convert_to_KB(throughput):
-    match = re.match(r"([0-9.]+)([KMG]i?B?/s?)", throughput.strip())
-    if match:
-        value = float(match.group(1))
-        unit = match.group(2).lower()
-        if 'ki' in unit:  # KiB
-            return value
-        elif 'mi' in unit:  # MiB
-            return value * 1024 
-        elif 'b' in unit:  # B
-            return value / 1024
-        else:
-            return 0
-    return 0
-
-"""Extract the latest throughput from file."""
-def get_latest_throughput(filename):
-    with open(filename, 'r') as f:
-        lines = f.readlines()
-    
-    # Get the last non-empty line with throughput
-    latest_line = lines[-1].strip()
-    
-    # Extract the throughput value
-    throughput_value = latest_line.strip('()')  # Remove the square brackets
-    
-    # Convert throughput to bytes
-    throughput_KB = convert_to_KB(throughput_value)
-    
-    return throughput_KB 
-
 class sensor_cluster():
     def _read_temperature_data(self, file_path, sensor_id):
         with open(file_path, 'r') as file:
@@ -80,8 +47,8 @@ class sensor_cluster():
                 except (ValueError, IndexError):
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
+            # Update throughputs 
             self._throughputs[sensor_id] = bytes_received / 1024 / self._observation_time
-
         return np.array(data)
 
     """
@@ -110,10 +77,11 @@ class sensor_cluster():
 
         if num_chunks_in_file < self._num_transmission_frames:
             print(f'The number of chunks to send or the number of file lines per chunk must be decreased. File {dataset_dir} contains enough data for {num_chunks_in_file} but the number of transmission frames is {self._num_transmission_frames}')
+            return []
 
         # Split file into chunks
         chunks = [lines[i:i + file_lines_per_chunk] for i in range(0, len(lines), file_lines_per_chunk)]
-        chunks = [''.join(chunk) for chunk in chunks[:self._num_transmission_frames]]
+        chunks = [''.join(chunk) for chunk in chunks]
 
         return chunks
    
@@ -131,9 +99,11 @@ class sensor_cluster():
 
     def get_obs(self):
         print('\n\nGetting observation')
+        rates = [self._transmission_frequencies[i] for i in self.transmission_freq_idxs]
 
         # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = {}
+        #received_packets = self._parse_tcpdump_output()
 
         for i in range(self._num_sensors):
             # Name of file where transmisions recieived by the cluster head from sensor i is stored
@@ -147,7 +117,9 @@ class sensor_cluster():
             # TODO: Lock before clearing?
             with open(f'{self._log_directory}/ch_received_data/{file_name}', 'r+') as file:
                 file.truncate(0)
-            
+           
+            #print(received_packets)
+
             # Read the temperature data for sensor i from the copied file
             sensor_data = self._read_temperature_data(file_path, i)
             if len(sensor_data) > 0:
@@ -168,38 +140,33 @@ class sensor_cluster():
             G.add_node(i)
 
         for i in range(len(awake_sensors)):
-            print(f"throughput in bytes for sensor {awake_sensors[i]}: {self._throughputs[i]}")
-            # Get the average throughput in KiB/s 
-            #self._throughputs[awake_sensors[i]] = len(temperature_data[awake_sensors[i]]) / 1024 / self._observation_time
-
             for j in range(i + 1, len(awake_sensors)):
                 # TODO: Currently only using first data point for similiarity; need to add timestamps to data for more robust similarity checking
                 similarity[awake_sensors[i], awake_sensors[j]] = int(temperature_data[awake_sensors[i]][0] - temperature_data[awake_sensors[j]][0] <= self._similarity_threshold)
                 if similarity[awake_sensors[i],awake_sensors[j]] == 1:
-                    print(f'Node {awake_sensors[i]} ~ Node {awake_sensors[j]}')
                     G.add_edge(awake_sensors[i],awake_sensors[j])
+
+        total_throughput = np.sum(self._throughputs)
+        change_in_total_throughput = total_throughput - self._total_throughput
+        self._total_throughput = total_throughput
             
         print(f'Rates (Kib/s) : {[a for a in self.transmission_freq_idxs]}')
-        max_throughput = (max(self._throughputs))
-
-        self._max_throughput = max(max(self._throughputs), self._max_throughput)
-        self._max_total_throughput = max(self._max_total_throughput, sum(self._throughputs))
-
-        if self._max_throughput == 0:
-            return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, 0)
-
         
+        if total_throughput == 0:
+            return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, 0, rates)
+
         print(f'Throughputs (Kib/s) : {self._throughputs}')
-        print(f'Total throughput over observation: {np.sum(self._throughputs)} KiB/s')
+        print(f'Total throughput over observation: {total_throughput} KiB/s')
 
         # Get a maximal clique cover for G
         maximal_clique_cover = list(maximal_cliques(G)) 
         print(f'maximal_clique_cover: {maximal_clique_cover}')
         print(f'Max throughput in clique: {[max([self._throughputs[node] for node in clique]) for clique in maximal_clique_cover]}')
 
-        max_clique_throughputs = [max([self._throughputs[node] / (self._max_throughput) for node in clique]) for clique in maximal_clique_cover] 
-        clique_throughput_reward = 0.5 * (np.median(max_clique_throughputs) - 1)
-        throughput_reward = 0.5 * ((np.sum(self._throughputs) / (self._max_total_throughput)) - 1)
+        max_throughput = np.max(self._throughputs)
+        max_clique_throughputs = [max([self._throughputs[node] for node in clique]) for clique in maximal_clique_cover] 
+        clique_throughput_reward = 0.5 * (np.median(max_clique_throughputs) / max_throughput - 1)
+        throughput_reward = 0.5 * ((change_in_total_throughput / total_throughput) - 1)
         reward = clique_throughput_reward + throughput_reward
 
         if np.sum(self._throughputs) > self._max_throughput:
@@ -221,7 +188,7 @@ class sensor_cluster():
         #self.clique_reward_log.append(clique_throughput_reward)
         #self.throughput_reward_log.append(throughput_reward)
         
-        return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward)
+        return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward, rates)
    
     """
     Create Mininet topology
@@ -238,7 +205,7 @@ class sensor_cluster():
         self._cluster_head = self._net.addStation(f'ch', ip=f'192.168.0.100/24',
                                       range='150', position='30,30,0', cpu=1, mem=1024*2)
 
-        #create 
+        #create sensors 
         self._sensors = []
         for i in range(self._num_sensors):
             ip_address = f'192.168.0.{i + 1}/24'
@@ -265,9 +232,11 @@ class sensor_cluster():
         self._num_sensors = len(sensor_ids)
         
         self._throughputs = [0 for i in range(self._num_sensors)]
+        self._total_throughput = 0
         self._max_throughput = 0
         self._max_total_throughput = 0
         self._transmission_frame_duration = transmission_frame_duration
+        self._tcpdump_lines_parsed = [0 for i in range(self._num_sensors)]
 
         # Directories
         self._log_directory = log_directory
@@ -295,6 +264,8 @@ class sensor_cluster():
 
         # Delete the log folder if already it exists
         subprocess.run(["rm", "-rf", log_directory])
+
+        # Create log directories 
         os.makedirs(log_directory)
         os.makedirs(log_directory + '/ch_received_data')
         os.makedirs(log_directory + '/error')
@@ -311,7 +282,6 @@ class sensor_cluster():
             file_path = f'{dataset_directory}/tower{tower_number}Data_processed.csv'
             if os.path.exists(file_path):
                 self._datasets[i] = self._preprocess_dataset_into_chunks(file_path, i, file_lines_per_chunk)
-                self._datasets[i] = self._datasets[i] + self._datasets[i]
             else:
                 print(f"Warning: Dataset file not found for sensor {i}: {file_path}")
                 self._datasets[i] = []
@@ -356,7 +326,6 @@ class sensor_cluster():
 
         # Log the initial transmission rate
         self.rate_log[sensor_idx].append(self.transmission_freq_idxs[sensor_idx])
-
         filler = 'G' * (self._transmission_size - 1) + '\n'
 
         while next_chunk_idx < len(chunks):
@@ -402,11 +371,8 @@ class sensor_cluster():
             chunk = chunks[int(next_chunk_idx)] 
          
             # Send the chunk (with filler to pad the chunk to the correct length)
-            cmd = f'printf "{chunk}\n{filler[len(chunk):]}\n" | nc -v -q0 -u {ch_ip} {port} >> {self._log_directory}/error/nc{sensor_idx} 2>&1 &'
+            cmd = f'printf "{chunk}\n{filler[len(chunk):]}\n" | nc -v -w0 -u {ch_ip} {port} >> {self._log_directory}/error/nc{sensor_idx} 2>&1 &'
             sensor.cmd(cmd)
-
-            
-
             chunks_sent += 1
 
             transmission_time = time.time() - transmission_start_time
@@ -447,7 +413,7 @@ class sensor_cluster():
 
         # Capture the network by pcap
         pcap_file = f'{self._log_directory}/pcaps/capture.pcap'
-        node.cmd(f'tcpdump -i {node.defaultIntf().name} -n udp portrange {5001}-{5001+self._num_sensors-1} -U -w {pcap_file} &')
+        node.cmd(f'tcpdump -U -i {node.defaultIntf().name} -n udp portrange {5001}-{5001+self._num_sensors-1} -U -w {pcap_file} &')
         info(f"Receiver: Started tcpdump capture on ports 5001-{5001+self._num_sensors - 1}\n")
 
     """
@@ -491,7 +457,7 @@ class sensor_cluster():
 
             for i, sensor in enumerate(self._sensors):
                 tcpdump_file = f'{self._log_directory}/pcaps/tcpdump_sender_sensor{i}.pcap'
-                sensor.cmd(f'tcpdump -i s{i}-wlan0 -w {tcpdump_file} &')
+                sensor.cmd(f'tcpdump -U -i s{i}-wlan0 -w {tcpdump_file} &')
                 
                 thread = threading.Thread(target=self._send_messages_to_cluster_head, args=(sensor, ch_ip, i))
                 thread.start()
@@ -537,23 +503,32 @@ class sensor_cluster():
 
         self._server.close()
 
-    def _parse_tcpdump_output(self, file_path):
+    def _parse_tcpdump_output(self):
         print("Starting to parse tcpdump output...")
         start_time = time.time()
         udp_pattern = re.compile(r'(\d{2}:\d{2}:\d{2}\.\d+)\sIP\s(\d+\.\d+\.\d+\.\d+)\.(\d+)\s>\s(\d+\.\d+\.\d+\.\d+)\.(\d+):\sUDP,\slength\s(\d+)')
         sensor_packets = defaultdict(list)
 
-        with open(file_path, 'r') as file:
-            print(f'Lines parsed: self._tcpdump_lines_parsed')
+        # Create a copy of the original file
+        result = subprocess.run(["cp", f'{self._log_directory}/pcaps/capture.pcap', f'{self._log_directory}/pcaps/.capture.pcap'])
+
+        with open(f'{self._log_directory}/pcaps/capture.pcap', 'r+') as file:
+            file.truncate(0)
+
+        result = subprocess.run(["sudo", "bash", f"{os.getcwd()}/extract_pcap.sh"])
+
+        if result.returncode == 0:
+            print("Output:", result.stdout)
+        else:
+            print("Error:", result.stderr)
+
+        with open(f'{self._log_directory}/pcaps/extracted_data/tcpdump_output_capture.txt', 'r') as file:
             lines = file.readlines()
-            if len(lines) > self._tcpdump_lines_parsed:
-                lines = lines[self._tcpdump_lines_parsed]
-                total_lines = len(lines)
-                self._tcpdump_lines_parsed += total_lines
-                for i, line in enumerate(lines):
-                    if i % 10000 == 0:
-                        print(f"Parsing progress: {i}/{total_lines} lines ({i/total_lines*100:.2f}%)")
+            
+            for i, line in enumerate(lines):
+                if i % 10000 == 0:
                     match = udp_pattern.search(line)
+                    
                     if match:
                         time_str = match.group(1)
                         src_ip = match.group(2)

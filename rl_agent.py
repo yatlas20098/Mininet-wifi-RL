@@ -10,6 +10,7 @@ from itertools import count
 import struct
 import time
 import threading
+import pickle
 
 import torch
 import torch.nn as nn
@@ -54,29 +55,32 @@ class DQN(nn.Module):
         self._num_sensors = num_sensors
         w = 128 
 
-        self.layer1 = nn.Linear(num_sensors*num_sensors + 2*num_sensors, w)
+        self.layer1 = nn.Linear(n_observations, w)
         self.layer2 = nn.Linear(w,w)
         self.layer3 = nn.Linear(w,w)
         self.layer4 = nn.Linear(w, num_sensors * sampling_freq)
 
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
-    def forward(self, x, first_step=False):
+    def forward(self, x):
         x = F.relu(self.layer1(x))
         x = F.relu(self.layer2(x))
         x = F.relu(self.layer3(x))
         x = F.relu(self.layer4(x))
         
-        return x
+        return x.to(device)
+
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001, recharge_thresh=0.2):
-        self._env = WSNEnvironment(max_steps=100, sampling_freq=sampling_freq, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device)
+    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=8):
+        self._env = WSNEnvironment(max_steps=max_steps, sampling_freq=sampling_freq, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device, num_episodes=num_episodes)
         
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq
-        self._n_observations = self._num_sensors
-        self._recharge_thresh = 0.2
+        self._n_observations = self._num_sensors*self._num_sensors + 3*self._num_sensors
+        self._recharge_thresh = recharge_thresh
         self._num_clusters = num_clusters
+        self._num_episodes = num_episodes
+        self._train_every = train_every
 
         self._sensor_ids = sensor_ids
         self._observation_time = observation_time
@@ -90,12 +94,13 @@ class WSN_agent:
         self._target_net.load_state_dict(self._policy_net.state_dict())
 
         self._optimizer = optim.AdamW(self._policy_net.parameters(), lr=LR, amsgrad=True)
-        self._memory = ReplayMemory(3000)
+        self._memory = ReplayMemory(max_steps*num_episodes)
 
         self._steps_done = 0
         self._episode_durations = []
         self._energy_consumption = []
         self._rewards = []
+        self._loss = []
 
         self._BATCH_SIZE = BATCH_SIZE 
         self._GAMMA = GAMMA 
@@ -107,7 +112,7 @@ class WSN_agent:
         time.sleep(20)
         self._state, self._info = self._env.reset()
 
-    def select_action(self):
+    def _select_action(self):
         sample = random.random()
         eps_threshold = self._EPS_END + (self._EPS_START - self._EPS_END) * math.exp(-1. * self._steps_done / self._EPS_DECAY)
         self._steps_done += 1
@@ -122,21 +127,27 @@ class WSN_agent:
             print('Getting best action')
             with torch.no_grad():
                 action_values = self._policy_net(self._state)
-                action_values= action_values.view(1, self._num_sensors, 4)
-                action_probs = F.softmax(action_values, dim=-1)
-                action = torch.argmax(action_probs, dim=-1)
-                action = action.squeeze(0)
+                action_values = action_values.view(self._num_sensors, self._sampling_freq)
+                #print(action_values)
+                action_probs = F.softmax(action_values, dim=1)
+                print(action_probs)
+                action = torch.argmax(action_probs, dim=1)
+                print(action)
+                #action = action.squeeze(0)
         else:
             print('Getting random action')
             action = torch.randint(0, self._sampling_freq, (self._num_sensors,), dtype=torch.long, device=device) 
        
         print(f'action: {action}')
         action[dead_sensors] = 0 # Dead sensors cannot transmit
-        action[awake_sensors & (action==0)] = 1 # Awake sensors must transmit
+        # action[awake_sensors & (action==0)] = 1 # Awake sensors must transmit
 
         return action
 
-    def select_best_action(self):
+    '''
+    For testing purposes only
+    '''
+    def _select_best_action(self):
         energy = self._state[0][:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
         energy = energy.squeeze()
         dead_sensors = (energy <= self._recharge_thresh)
@@ -156,62 +167,65 @@ class WSN_agent:
 
         return action
 
-    def _optimize_model(self, first_step=False):
+    def _optimize_model(self):
         if len(self._memory) < self._BATCH_SIZE:
             print(f'Mem len: {len(self._memory)}')
             return
 
+        # Get a batch of transitions
         transitions = self._memory.sample(self._BATCH_SIZE)
         batch = Transition(*zip(*transitions))
 
+        # Get the non-final states in the batch
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
         non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
         state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action).long()
+       
+        # Get the actions from the batch of transitions
+        action_batch = torch.cat(batch.action).long().to(device)
         action_batch = action_batch.view(self._BATCH_SIZE, self._num_sensors)
+        
+        # Get the rewards from the batch of transitions
         reward_batch = torch.cat(batch.reward).view(-1, 1)
 
-        state_action_values = self._policy_net(state_batch, first_step).gather(2, action_batch.unsqueeze(-1))
-        state_action_values = state_action_values.squeeze(-1)
-
+        # Get the Q-values corresponding to the actions
+        state_action_values = self._policy_net(state_batch).view(-1, self._num_sensors, self._sampling_freq).gather(2, action_batch.unsqueeze(1))
+        # Remove any unneccesary dimensions
+        state_action_values = state_action_values.squeeze()
+        
         next_state_values = torch.zeros(self._BATCH_SIZE, self._num_sensors, device=device)
         with torch.no_grad():
-            max_values = self._target_net(non_final_next_states, first_step).max(2)[0]
-            next_state_values[non_final_mask] = max_values
+            max_values = self._target_net(non_final_next_states).view(-1, self._num_sensors, self._sampling_freq).max(2)[0]
+            next_state_values[non_final_mask] = max_values.view(-1, self._num_sensors)
 
-        reward_batch = reward_batch.expand(-1, self._num_sensors)
         expected_state_action_values = (next_state_values * self._GAMMA) + reward_batch
 
         criterion = nn.SmoothL1Loss()
         loss = criterion(state_action_values, expected_state_action_values)
+        self._loss.append(loss.item())
+        with open('loss.pkl', 'wb') as file:
+            pickle.dump(self._loss, file)
+
+        print(f"Loss: {loss.item():.4f}")
 
         self._optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_value_(self._policy_net.parameters(), 100)
         self._optimizer.step()
 
-    def _train(self):
-        if torch.cuda.is_available() or torch.backends.mps.is_available():
-            print('Torch Cuda is available')
-            num_episodes = 3 
-        else:
-            print('Torch Cuda is not available')
-            num_episodes = 3 
-
-        self._train_every = 10
+    def train(self):
         self._train_steps = 0
 
-        for i_episode in range(num_episodes):
+        for i_episode in range(self._num_episodes):
             # Initialize the environment and get its state
             print(self._env.reset())
             self._state, self._info = self._env.reset()
             self._state = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
             print(f'State = {self._state}')
-            first_step = True
 
             for t in count():
                 print(f'\n\nEpisode {i_episode}, Step: {t}')
-                action = torch.Tensor.cpu(self.select_action())
+                action = torch.Tensor.cpu(self._select_action())
 
                 print('Taking next step')
                 observation, reward, terminated, truncated, _ = self._env.step(self._steps_done, action.numpy())
@@ -234,9 +248,8 @@ class WSN_agent:
                 
                 if self._train_steps >= self._train_every:
                 # Perform one step of the optimization (on the policy network)
-                    self._optimize_model(first_step)
+                    self._optimize_model()
                     self._train_steps = 0
-                    first_step = False
 
                 # Soft update of the target network's weights
                 # θ′ ← τ θ + (1 −τ )θ′
@@ -253,21 +266,9 @@ class WSN_agent:
 
                 self._train_steps += 1
 
-    def start(self):
-        if torch.cuda.is_available() or torch.backends.mps.is_available():
-            print('Torch Cuda is available')
-            num_episodes = 15 
-        else:
-            print('Torch Cuda is not available')
-            num_episodes = 15 
-
-        self._train_every = 10
-        self._train_steps = 0
-
-        self._train()
-
         
 if __name__ == '__main__':
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame_duration=1/16, file_lines_per_chunk=1, observation_time=10)
-    agent.start()
+    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=10, BATCH_SIZE=512, num_episodes=300)
+    agent.train()
+    
