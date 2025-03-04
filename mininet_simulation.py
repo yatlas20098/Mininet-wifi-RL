@@ -177,16 +177,21 @@ class sensor_cluster():
         print(f'Clique reward: {clique_throughput_reward}')
         print(f'Throughput reward: {throughput_reward}')
 
-        #for i in range(self._num_sensors):
-            #self.throughput_log[i].append(self._throughputs[i])
-            #self.energy_log[i].append(self._energy[i])
-            #self.rate_log[i].append(self.transmission_freq_idxs[i])
+        for i in range(self._num_sensors):
+            self.throughput_log[i].append(self._throughputs[i])
+            self.energy_log[i].append(self._energy[i])
+            self.rate_log[i].append(self.transmission_freq_idxs[i])
 
-        #self.clique_log.append(maximal_clique_cover)
+        self.clique_log.append(maximal_clique_cover)
 
-        #self.reward_log.append(reward)
-        #self.clique_reward_log.append(clique_throughput_reward)
-        #self.throughput_reward_log.append(throughput_reward)
+        self.reward_log.append(reward)
+        self.clique_reward_log.append(clique_throughput_reward)
+        self.throughput_reward_log.append(throughput_reward)
+        
+        with open('figure_data.pkl', 'wb') as file:
+            pickle.dump((self._sensor_ids, self._transmission_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_reward_log, self.throughput_reward_log, self.clique_log), file)
+        print(f'Pickle dump succesfuly made\n')
+
         
         return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward, rates)
    

@@ -1,5 +1,4 @@
 import gymnasium as gym
-
 import numpy as np
 import math
 import random
@@ -17,6 +16,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.optim.lr_scheduler as lr_scheduler
+import torch.nn.init as init
 
 from WSN_env import WSNEnvironment
 
@@ -53,22 +53,31 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self._sampling_freq = sampling_freq
         self._num_sensors = num_sensors
-        w = 128 
+        w = 1024
+        layers = [nn.Linear(n_observations, w), nn.ReLU()]
+        num_hidden_layers = 13
+        for _ in range(num_hidden_layers):
+            layers.append(nn.Linear(w,w))
+            layers.append(nn.ReLU())
+        layers.append(nn.Linear(w, num_sensors * sampling_freq))
+        layers.append(nn.ReLU())
+        self.layers = nn.Sequential(*layers)
 
-        self.layer1 = nn.Linear(n_observations, w)
-        self.layer2 = nn.Linear(w,w)
-        self.layer3 = nn.Linear(w,w)
-        self.layer4 = nn.Linear(w, num_sensors * sampling_freq)
+        # Initalize weights
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                init.constant_(m.bias, 0)
 
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
     def forward(self, x):
-        x = F.relu(self.layer1(x))
-        x = F.relu(self.layer2(x))
-        x = F.relu(self.layer3(x))
-        x = F.relu(self.layer4(x))
+        #x = F.relu(self.first_layer(x))
+        #for i in range(self.num_hidden_layers):
+        #    x = F.relu(self.hidden_layers[i](x))
+        #x = F.relu(self.last_layer(x))
         
-        return x.to(device)
+        return self.layers(x).to(device)
 
 class WSN_agent:
     def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 0.9, EPS_END = 0.3, EPS_DECAY = 1500, TAU = 0.005, LR = 0.001, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=8):
@@ -245,19 +254,20 @@ class WSN_agent:
 
                 # Move to the next state
                 self._state = next_state
-                
-                if self._train_steps >= self._train_every:
+               
                 # Perform one step of the optimization (on the policy network)
-                    self._optimize_model()
+                self._optimize_model()
+
+                if self._train_steps >= self._train_every:
                     self._train_steps = 0
 
-                # Soft update of the target network's weights
-                # θ′ ← τ θ + (1 −τ )θ′
-                target_net_state_dict = self._target_net.state_dict()
-                policy_net_state_dict = self._policy_net.state_dict()
-                for key in policy_net_state_dict:
-                    target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
-                self._target_net.load_state_dict(target_net_state_dict)
+                    # Soft update of the target network's weights
+                    # θ′ ← τ θ + (1 −τ )θ′
+                    target_net_state_dict = self._target_net.state_dict()
+                    policy_net_state_dict = self._policy_net.state_dict()
+                    for key in policy_net_state_dict:
+                        target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
+                    self._target_net.load_state_dict(target_net_state_dict)
 
                 if done:
                     self._episode_durations.append(t + 1)
@@ -269,6 +279,6 @@ class WSN_agent:
         
 if __name__ == '__main__':
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=10, BATCH_SIZE=512, num_episodes=300)
+    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq = 4, transmission_size=int(1024*3), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=10, BATCH_SIZE=512, num_episodes=300, LR=0.1e-5, train_every=500)
     agent.train()
     

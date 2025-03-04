@@ -70,7 +70,6 @@ create_multiplot(datasets, 'Sensor Temperature over Steps', 'Step', 'Temperature
 
 #file_path = 'prev_results/data_241204.pkl'
 file_path = 'figure_data.pkl'
-#file_path = 'test.pkl'
 
 with open(file_path, 'rb') as file:
     data = pickle.load(file)
