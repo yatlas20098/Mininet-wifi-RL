@@ -57,7 +57,11 @@ class WSNEnvironment(gym.Env):
         print("Done waiting for cluster to start")
 
         # Define observation space
-        self.observation_space = spaces.Box(low=0, high=1, shape=(self.num_sensors*self.num_sensors + 3*self.num_sensors,), dtype=np.float32)
+        # self.num_sensor*self.num_sensor similarity features, self.num_sensors previous throughput features, and self.num_sensors previous transmission rate features 
+        #self.observation_space = spaces.Box(low=0, high=1, shape=(self.num_sensors*self.num_sensors + 2*self.num_sensors,), dtype=np.float32)
+        # Each sensor has num_sensor similarity features, a feature for its previous throughput, and a feature for its previous transmission rate
+        self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_sensors, self.num_sensors + 2,), dtype=np.float32)
+
 
         self.sampling_freq = sampling_freq
 
@@ -87,11 +91,12 @@ class WSNEnvironment(gym.Env):
         for i in range(self.num_sensors):
             self.info['sensor ' + str(i)] = set()
 
-        similarity, energy_data, throughputs, reward, rates = self._cluster.get_obs()
+        similarity, throughputs, reward, rates = self._cluster.get_obs()
         time.sleep(self.observation_time)
-        similarity, energy_data, throughputs, reward, rates = self._cluster.get_obs()
-        self._state = np.concatenate([similarity.flatten(), energy_data, throughputs, rates])
+        similarity, throughputs, reward, rates = self._cluster.get_obs()
+        self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
+        print(self._state)
 
         return self._state, self.info
     
@@ -118,8 +123,8 @@ class WSNEnvironment(gym.Env):
         print('Returning reward')
         self.step_count += 1
        
-        similarity, energy_data, throughputs, reward, rates = self._cluster.get_obs()
-        self._state = np.concatenate([similarity.flatten(), energy_data, throughputs, rates])
+        similarity, throughputs, reward, rates = self._cluster.get_obs()
+        self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
 
         return self._state, reward, terminated, truncated, self.info

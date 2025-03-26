@@ -21,10 +21,20 @@ def create_multiplot(datasets, title, xlabel, ylabel, legend_labels, output_name
     plt.close()
     print(f"Done plotting\n")
 
-def create_plot(data, title, xlabel, ylabel, output_name):
+def create_plot(data, title, xlabel, ylabel, output_name, average=0):
     print(f"Plotting {output_name}...\n")
     plt.figure(figsize=(6,6))
     plt.plot(range(len(data)), data)
+    # Plot line for averages
+    if average > 0:
+        averages = [np.mean(data[i-100:i]) for i in range(average, len(data))]
+        plt.plot(range(average, len(data)), averages, label=f'Average over past {average} steps')
+        m, b = np.polyfit(range(len(data)), data, 1) # 1 indicates linear fit
+        plt.plot(range(len(data)), m * range(len(data)) + b, label=f'Line of Best Fit')
+        
+        # Plot best fit
+
+
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -73,18 +83,37 @@ file_path = 'figure_data.pkl'
 
 with open(file_path, 'rb') as file:
     data = pickle.load(file)
-
-if len(data) == 7:
-    sensor_ids, rate_frequencies, rate_log, energy_log, throughput_log, reward_log, clique_log = data
-else:
-    sensor_ids, rate_frequencies, rate_log, energy_log, throughput_log, reward_log, clique_reward_log, throughput_reward_log, clique_log = data
+    sensor_ids, rate_frequencies, rate_log, _, throughput_log, reward_log, clique_reward_log, throughput_reward_log, clique_log, chunks_sent_log = data
 print(f'Data len: {len(data)}')
+
+with open('loss.pkl', 'rb') as file:
+    data = pickle.load(file)
+    loss = data
 
 print(rate_frequencies)
 print(f'Total Steps :{len(reward_log)}')
 #clique_log = [clique_log[i] for i in range(len(clique_log)) if i % 10 == 0]
 throughput_log = np.array(throughput_log).T
 throughput = [np.sum(t) for t in throughput_log]
+chunks_sent = [np.sum(c) for c in chunks_sent_log]
+
+valid = [i for i in range(len(throughput)) if throughput[i] < 500]
+throughput = np.array([throughput[i] for i in valid])[100:]
+chunks_sent = np.array([chunks_sent[i] for i in valid])[100:]
+
+total_throughput = [throughput[0]]
+total_chunks_sent = [chunks_sent[0]]
+
+for i in range(1, len(chunks_sent)):
+    total_throughput.append(throughput[i] + total_throughput[i-1])
+    total_chunks_sent.append(chunks_sent[i] + total_chunks_sent[i-1])
+
+chunks_lost = np.array(total_chunks_sent) - np.array(total_throughput)
+
+
+
+#chunks_lost = chunks_sent_over_10_steps - throughput_over_10_steps 
+
 
 print(f'Mean throughput: {np.mean(throughput[:1500])}')
 print(f'Mean throughput: {np.mean(throughput[1500:])}')
@@ -93,20 +122,23 @@ print(f'Mean throughput: {np.mean(throughput[1500:])}')
 print(f'Mean reward: {np.mean(reward_log[:1500])}')
 print(f'Mean reward: {np.mean(reward_log[1500:])}')
 
-sum_throughput = [np.sum(throughput) for throughput in throughput_log]
+#sum_throughput = [np.sum(throughput) for throughput in throughput_log]
+sum_throughput = [x for x in throughput if x < 500] 
 num_cliques = [len(cliques) for cliques in clique_log]
-energy_log = np.array(energy_log).T
-mean_energy = [np.mean(energy) for energy in energy_log]
+#energy_log = np.array(energy_log).T
+#mean_energy = [np.mean(energy) for energy in energy_log]
 
-create_plot(sum_throughput, 'Cluster Head Throughput over Steps', 'Step', 'Throughput (KiB/s)', 'throughput')
-create_plot(reward_log, 'Rewards over Steps', 'Step', 'Reward', 'rewards')
+create_plot(chunks_lost, 'Cluster Head Chunks Lost', 'Step', 'Chunks Lost', 'chunks')
 
-create_plot(mean_energy, 'Average Sensor Energy over Steps', 'Step', 'Average Percent of Energy Remaining', 'energy') 
+create_plot(sum_throughput, 'Cluster Head Throughput over Steps', 'Step', 'Succesfull transmissions', 'throughput', average=100)
+create_plot([r for r in reward_log if r > -4], 'Rewards over Steps', 'Step', 'Reward', 'rewards')
+
+create_plot(loss, 'Trainning Loss', 'step', 'Loss', 'Loss', average=100)
+#create_plot(mean_energy, 'Average Sensor Energy over Steps', 'Step', 'Average Percent of Energy Remaining', 'energy') 
 
 create_plot(num_cliques[:300], 'Number of cliques over Steps', 'Step', 'Number of Cliques', 'num_cliques')
 
-if len(data) == 9: 
-    create_plot(clique_reward_log, 'Clique Rewards over Steps', 'Step', 'Reward', 'rewards')
-    create_plot(throughput_reward_log, 'Throughput Rewards over Steps', 'Step', 'Reward', 'rewards')
+create_plot(clique_reward_log, 'Clique Rewards over Steps', 'Step', 'Reward', 'Clique Rewards', average=100)
+#    create_plot(throughput_reward_log, 'Throughput Rewards over Steps', 'Step', 'Reward', 'rewards')
 
 
