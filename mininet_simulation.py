@@ -105,7 +105,7 @@ class sensor_cluster():
             throughputs - vector of average throughput for each sensor
             reward - reward according to reward function
     """
-    def get_obs(self):
+    def get_obs(self, log=True):
         print('\n\nGetting observation')
         rates = [self._transmission_frequencies[i] for i in self.transmission_freq_idxs]
 
@@ -130,6 +130,10 @@ class sensor_cluster():
             if len(sensor_data) > 0:
                 temperature_data[i] = sensor_data
                 data_arrived = True
+
+        if not log:
+            return
+            
 
         # Initalize similarity matrix
         similarity = np.zeros((self._num_sensors, self._num_sensors))
@@ -162,21 +166,18 @@ class sensor_cluster():
         print(f'Throughputs (# of sucessfull transmissions) : {self._throughputs}')
         print(f'Total throughput over observation: {total_throughput} succesfull transmissions')
 
-        
         if total_throughput == 0:
             # return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, 0, rates)
             return (similarity, self._throughputs, 0, rates)
-
 
         # Calculate clique reward 
         maximal_clique_cover = list(maximal_cliques(G)) # Get edge cover of maximal cliques 
         max_throughput = np.max(self._throughputs)
         max_clique_throughputs = [max([self._throughputs[node] for node in clique]) for clique in maximal_clique_cover] # Get max throughput for each clique
-        clique_throughput_reward = 0.5 * (np.min(max_clique_throughputs) / max_throughput - 1)
+        clique_throughput_reward = 0.0 * (np.mean(max_clique_throughputs) / max_throughput - 1)
 
-        throughput_reward = 0.5 * ((change_in_total_throughput / total_throughput) - 1)
+        throughput_reward = 1.0 * ((change_in_total_throughput / total_throughput) - 1)
         reward = clique_throughput_reward + throughput_reward
-
         
         self.chunks_sent_log.append(list(self._chunks_sent))
         # Log sensor data and rewards 

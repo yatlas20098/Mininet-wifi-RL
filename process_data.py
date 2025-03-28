@@ -97,9 +97,8 @@ throughput_log = np.array(throughput_log).T
 throughput = [np.sum(t) for t in throughput_log]
 chunks_sent = [np.sum(c) for c in chunks_sent_log]
 
-valid = [i for i in range(len(throughput)) if throughput[i] < 500]
-throughput = np.array([throughput[i] for i in valid])[100:]
-chunks_sent = np.array([chunks_sent[i] for i in valid])[100:]
+#throughput = np.array([throughput[i] for i in valid])[100:]
+#chunks_sent = np.array([chunks_sent[i] for i in valid])[100:]
 
 total_throughput = [throughput[0]]
 total_chunks_sent = [chunks_sent[0]]
@@ -123,14 +122,14 @@ print(f'Mean reward: {np.mean(reward_log[:1500])}')
 print(f'Mean reward: {np.mean(reward_log[1500:])}')
 
 #sum_throughput = [np.sum(throughput) for throughput in throughput_log]
-sum_throughput = [x for x in throughput if x < 500] 
+#sum_throughput = [x for x in throughput if x < 2000] 
 num_cliques = [len(cliques) for cliques in clique_log]
 #energy_log = np.array(energy_log).T
 #mean_energy = [np.mean(energy) for energy in energy_log]
 
-create_plot(chunks_lost, 'Cluster Head Chunks Lost', 'Step', 'Chunks Lost', 'chunks')
+create_plot(chunks_lost, 'Cluster Head Chunks Lost', 'Step', 'Chunks Lost', 'chunks_lost')
 
-create_plot(sum_throughput, 'Cluster Head Throughput over Steps', 'Step', 'Succesfull transmissions', 'throughput', average=100)
+create_plot(throughput, 'Cluster Head Throughput over Steps', 'Step', 'Succesfull transmissions', 'throughput', average=100)
 create_plot([r for r in reward_log if r > -4], 'Rewards over Steps', 'Step', 'Reward', 'rewards')
 
 create_plot(loss, 'Trainning Loss', 'step', 'Loss', 'Loss', average=100)
