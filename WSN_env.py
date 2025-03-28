@@ -114,6 +114,7 @@ class WSNEnvironment(gym.Env):
             self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
             return self._state, reward, terminated, truncated, self.info
 
+        # Take action by updating the transmission frequency indices
         for i in range(len(action)):
             self._cluster.transmission_freq_idxs[i] = action[i]
 
