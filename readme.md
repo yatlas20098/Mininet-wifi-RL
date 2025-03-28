@@ -45,7 +45,7 @@ pip install -r requirements.txt
 #### Run the code:
 
 ```
-sudo -E python3 simulation.py
+sudo -E python3 rl_agent.py
 ```
 
 #### Clean mininet if the program did not exit regularly (crashed or terminated):
@@ -58,22 +58,9 @@ sudo mn -c
 #### Analyze the result:
 
 ```
-sudo chmod -R 777 /output
+sudo -E python3 process_data.py
 ```
-
-Analyze the pacp file:
-
-```
-./extract_pacp.sh
-```
-
-Draw the timeseries plot of throughput for each sensor and one for all the sensors:
-
-```
-python3 plot_timeseries.py
-```
-
-
+(results are stored in graphics)
 
 ### Mininet-WIFI introduction:
 
