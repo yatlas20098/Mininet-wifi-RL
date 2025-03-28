@@ -60,7 +60,7 @@ sudo mn -c
 ```
 sudo -E python3 process_data.py
 ```
-(results are stored in graphics)
+Results are stored in graphics. You may run process_data while the simulation is executing. 
 
 ### Mininet-WIFI introduction:
 
