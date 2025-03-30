@@ -29,7 +29,11 @@ from mn_wifi.wmediumdConnector import interference
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-class sensor_cluster():
+class sensor_cluster(self):
+    def set_rates(new_rates):
+        for i in range(len(new_rates)):
+            self.transmission_freq_idxs[i] = new_rates[i]
+
     def establish_connection_with_rl_agent(self):
         listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listen_port = 5000
