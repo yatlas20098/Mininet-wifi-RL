@@ -20,9 +20,13 @@ import matplotlib.pyplot as plt
 #msgpack_numpy_patch()
 import pickle
 import dill
-from mininet_simulation import sensor_cluster
-from server import mininet_server 
 
+try:
+    from mininet_simulation import sensor_cluster
+except ImportError:
+    pass
+
+from server import mininet_server
 #SAMPLING_FREQ = [1,2,3]
 # TOTAL_ENERGY = 100
 #log_directory = "log"
@@ -30,7 +34,7 @@ from server import mininet_server
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
     
-    def __init__(self, sensor_ids, device, observation_time=10, transmission_size=4*1024, transmission_frame_duration=1, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, num_episodes=10, local_mininet_simulation=True, server_ip="", server_port=""):
+    def __init__(self, sensor_ids, device, observation_time=10, transmission_size=4*1024, transmission_frame_duration=1, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, num_episodes=10, local_mininet=True, server_ip="", server_port=""):
         super(WSNEnvironment, self).__init__()
 
         # Environment parameters
@@ -43,8 +47,8 @@ class WSNEnvironment(gym.Env):
         self.beta=0.3
         self.observation_time = observation_time
         num_transmission_frames = 1*((max_steps * num_episodes * observation_time) // transmission_frame_duration) + 1000 # include extra frames as buffer
-        self._local_mininet_simulation = local_mininet_simulation
-        if local_mininet_simulation:
+        self._local_mininet_simulation = local_mininet
+        if local_mininet:
             self._cluster = sensor_cluster(sensor_ids, log_directory=f'data/log', observation_time=self.observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, num_transmission_frames=num_transmission_frames)
             print("Starting cluster\n")
             cluster_process = multiprocessing.Process(target=self._cluster.start, args=())
@@ -54,7 +58,7 @@ class WSNEnvironment(gym.Env):
             time.sleep(10)
 
         else:
-            self._cluster = mininet_server()
+            self._cluster = mininet_server(self.num_sensors, server_ip, server_port)
             time.sleep(60)
 
         self._device = device
@@ -97,16 +101,14 @@ class WSNEnvironment(gym.Env):
         for i in range(self.num_sensors):
             self.info['sensor ' + str(i)] = set()
 
-        self._cluster.get_obs(log=False) # Discard previous transmissions 
+        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self.num_sensors)
 
-        time.sleep(self.observation_time)
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_obs()
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
         print(self._state)
 
         return self._state, self.info
-    
+
     def step(self, new_rates_id, action):
         print(f"Step action: {action}")
 
@@ -122,19 +124,10 @@ class WSNEnvironment(gym.Env):
             self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
             return self._state, throughput_reward, clique_reward, terminated, truncated, self.info
 
-        self._cluster.get_obs(log=False) # Discared previous transmissions
-
-        # Take action by updating the transmission frequency indices
-        for i in range(len(action)):
-            self._cluster.transmission_freq_idxs[i] = action[i]
-
-        print('Waiting for an observation from cluster head')
-        time.sleep(self.observation_time)
-
         print('Returning reward')
         self.step_count += 1
        
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_obs()
+        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action)
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
 
