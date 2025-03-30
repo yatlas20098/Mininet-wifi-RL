@@ -126,7 +126,8 @@ class WSNEnvironment(gym.Env):
 
         print('Returning reward')
         self.step_count += 1
-       
+        
+        print(action)
         similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action)
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
