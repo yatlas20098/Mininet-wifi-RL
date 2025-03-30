@@ -64,7 +64,7 @@ class ReplayMemory(object):
         return Q
 
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 200, TAU = 0.01, LR = 0.25e-6, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
+    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 600, TAU = 0.01, LR = 0.25e-6, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
         self._env = WSNEnvironment(max_steps=max_steps, sampling_freq=sampling_freq, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device, num_episodes=num_episodes, local_mininet_simulation=local_mininet_simulation, server_ip=server_ip, server_port=server_port) 
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq # Number of possible transmission frequencies
@@ -173,7 +173,8 @@ class WSN_agent:
         self._optimizer['actor'].zero_grad()
         action_pred = self._actor_net(non_final_next_states)
         q_values = self._critic_net['throughput'](torch.cat((non_final_next_states, action_pred),-1)) + self._critic_net['clique'](torch.cat((non_final_next_states, action_pred), -1))
-        q_values = -q_values.mean()
+        print(f"q_values: {q_values}")
+        q_values = (q_values.mean())
         print(f"Actor Loss: {q_values:.4f}")
         q_values.backward()
         self._optimizer['actor'].step()
@@ -189,14 +190,12 @@ class WSN_agent:
         #dead_sensors = (energy <= self._recharge_thresh)
         #awake_sensors = (energy > self._recharge_thresh)
 
-        if sample > eps_threshold:
+        if sample > eps_threshold and self._steps_done >= self._BATCH_SIZE:
             print('Getting best action')
             # Sample an action using the policy 
-            action_probs = self._actor_net(self._state.view(-1))
-            action_probs = F.softmax(action_probs, dim=-1)
-
-            action = torch.multinomial(actions_probs,1)
-            action = action.item()
+            action = self._actor_net(self._state.view(-1))
+            action = torch.round(action).int()
+            action = action.cpu().detach().numpy()
             #action = torch.Tensor.cpu(action)
         else:
             print('Getting random action')
@@ -224,7 +223,7 @@ class WSN_agent:
 
                 action = self._select_action()                    
                 # Sample the next frame from the enviornment, and receive a reward
-                observation, throughput_reward, clique_reward, terminated, truncated, _ = self._env.step(self._steps_done, action.detach().cpu().numpy())
+                observation, throughput_reward, clique_reward, terminated, truncated, _ = self._env.step(self._steps_done, action)
                 
                 # Log the reward
                 self._rewards['throughput'].append(throughput_reward)
@@ -291,6 +290,6 @@ if __name__ == '__main__':
     mininet_server_port = 5000
 
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=128, num_episodes=1, max_steps=3000, LR=0.25e-6, train_every=500, local_mininet_simulation=False, server_ip=mininet_server_ip, server_port=mininet_server_port)
+    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=512, num_episodes=1, max_steps=3000, LR=0.25e-6, train_every=500, local_mininet_simulation=False, server_ip=mininet_server_ip, server_port=mininet_server_port)
     agent.train()
     
