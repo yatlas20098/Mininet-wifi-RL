@@ -104,7 +104,12 @@ class WSNEnvironment(gym.Env):
         similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self.num_sensors)
 
         self._state = np.column_stack((similarity, rates, throughputs))
-        self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
+        print(similarity)
+        print(rates)
+        print(throughputs)
+        self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
+        print(self._state)
+        self._state = torch.flatten(self._state)
         print(self._state)
 
         return self._state, self.info
@@ -121,14 +126,15 @@ class WSNEnvironment(gym.Env):
         # Check termination condition
         if truncated:
             terminated = True
-            self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
+            #self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
             return self._state, throughput_reward, clique_reward, terminated, truncated, self.info
 
         print('Returning reward')
         self.step_count += 1
         
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action)
+        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action.cpu().detach().numpy())
         self._state = np.column_stack((similarity, rates, throughputs))
-        self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
+        self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
+        self._state = torch.flatten(self._state)
 
         return self._state, throughput_reward, clique_reward, terminated, truncated, self.info

@@ -64,7 +64,7 @@ class ReplayMemory(object):
         return Q
 
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 1500, TAU = 0.01, LR = 0.25e-6, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
+    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 900, TAU = 0.01, LR = 0.25e-3, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
         self._env = WSNEnvironment(max_steps=max_steps, sampling_freq=sampling_freq, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device, num_episodes=num_episodes, local_mininet_simulation=local_mininet_simulation, server_ip=server_ip, server_port=server_port) 
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq # Number of possible transmission frequencies
@@ -131,15 +131,14 @@ class WSN_agent:
             non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
             non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
             non_final_next_states = non_final_next_states.view(-1, 12*self._num_sensors)
-            state_batch = torch.masked_select(batch.state, non_final_mask)
 
-            actions = torch.tensor([a[agent] for a in batch.action])
-            action_batch = torch.masked_select(actions, non_final_mask).long().to(device)
-            #action_batch = torch.cat(action_batch).long().to(device)
-            action_batch = action_batch.view(self._BATCH_SIZE, 1)
+            #state_batch = torch.stack(batch.state)[non_final_mask]
+            #action_batch = torch.stack(batch.action)[non_final_mask][:, agent]
 
+            
             with torch.no_grad():
                 next_actions = self._actor_net[agent](non_final_next_states)
+
 
             for reward_type in self._reward_types:
                 with torch.no_grad():
@@ -212,15 +211,13 @@ class WSN_agent:
         # action[dead_sensors] = 0 # Dont allow dead sensors to transmit
         # action[awake_sensors & (action==0)] = 1 # Force awake sensors to transmit
 
-        return actions.cpu().detach().numpy()
-
+        return actions
+    
     def train(self):
         for i_episode in range(self._num_episodes):
             # Initialize the environment and get its state
             print(self._env.reset())
             self._state, self._info = self._env.reset()
-            self._state = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
-            self._state = torch.tensor(self._state, dtype=torch.float32, device=device)
 
             print(f'State = {self._state}')
             for t in count():
@@ -245,7 +242,7 @@ class WSN_agent:
                     next_state = None
                 else:
                     #next_state = observation.clone().detach()
-                    next_state = observation.unsqueeze(0).clone().detach()
+                    next_state = observation.clone().detach()
 
                 # Store the transition in memory
                 self._memory.push(self._state, action, next_state, throughput_reward, clique_reward)
@@ -294,6 +291,6 @@ if __name__ == '__main__':
     mininet_server_port = 5000
 
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=4, num_episodes=1, max_steps=3000, LR=0.25e-3, train_every=500, local_mininet_simulation=False, server_ip=mininet_server_ip, server_port=mininet_server_port)
+    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=128, num_episodes=1, max_steps=3000, LR=0.25e-3, train_every=500, local_mininet_simulation=False, server_ip=mininet_server_ip, server_port=mininet_server_port)
     agent.train()
     

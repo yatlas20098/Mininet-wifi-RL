@@ -67,10 +67,8 @@ class Critic(nn.Module):
             layers.append(nn.Linear(w,w))
             layers.append(nn.ReLU())
         layers.append(nn.Linear(w, 1))
-        layers.append(nn.ReLU())
  
         self.layers = nn.Sequential(*layers)
- 
         # Initalize random weights
         for m in self.modules():
             if isinstance(m, nn.Linear):
