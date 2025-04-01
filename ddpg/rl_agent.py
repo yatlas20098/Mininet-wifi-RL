@@ -64,7 +64,7 @@ class ReplayMemory(object):
         return Q
 
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 600, TAU = 0.01, LR = 0.25e-6, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
+    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.99, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 500, TAU = 0.01, LR = 0.25e-6, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
         self._env = WSNEnvironment(max_steps=max_steps, sampling_freq=sampling_freq, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device, num_episodes=num_episodes, local_mininet_simulation=local_mininet_simulation, server_ip=server_ip, server_port=server_port) 
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq # Number of possible transmission frequencies
@@ -90,17 +90,17 @@ class WSN_agent:
         self._rewards = {}
 
         for reward_type in self._reward_types:
-            self._critic_net[reward_type] = Critic(sampling_freq, self._n_observations, num_actions, self._num_sensors, device).to(device)
-            self._critic_target_net[reward_type] = Critic(sampling_freq, self._n_observations, num_actions, self._num_sensors, device).to(device)
+            self._critic_net[reward_type] = [Critic(sampling_freq, self._n_observations, num_actions, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
+            self._critic_target_net[reward_type] = [Critic(sampling_freq, self._n_observations, num_actions, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
             
             self._train_every[reward_type] = train_every
-            self._optimizer[reward_type] = optim.AdamW(self._critic_net[reward_type].parameters(), lr=LR, amsgrad=True)
-            self._loss[reward_type] = []
-            self._rewards[reward_type] = []
+            self._optimizer[reward_type] = [optim.AdamW(self._critic_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
+            self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
+            #self._rewards[reward_type][agent] = []
 
-        self._actor_net = Actor(sampling_freq, self._n_observations, num_actions, self._num_sensors, device, min_freq = 0, max_freq=3).to(device)
-        self._actor_target_net = Actor(sampling_freq, self._n_observations, num_actions, self._num_sensors, device, min_freq=0, max_freq=3).to(device)
-        self._optimizer['actor'] = optim.AdamW(self._actor_net.parameters(), lr=LR, amsgrad=True)
+        self._actor_net = [Actor(sampling_freq, self._n_observations, num_actions, self._num_sensors, device, min_freq = 0, max_freq=3).to(device) for _ in range(self._num_sensors)]
+        self._actor_target_net = [Actor(sampling_freq, self._n_observations, num_actions, self._num_sensors, device, min_freq=0, max_freq=3).to(device) for _ in range(self._num_sensors)]
+        self._optimizer['actor'] = [optim.AdamW(self._actor_net[agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
 
         self._memory = ReplayMemory(max_steps*num_episodes)
 
@@ -121,63 +121,63 @@ class WSN_agent:
     def _optimize_model(self):
         if len(self._memory) < self._BATCH_SIZE:
             return
-
-        # Sample a batch of transitions 
-        transitions = self._memory.sample(self._BATCH_SIZE)
-        batch = Transition(*zip(*transitions))
-
-        # Get the non-final states in the batch
-        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
-        non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
-        non_final_next_states = non_final_next_states.view(-1, 12*self._num_sensors)
-        state_batch = torch.cat(batch.state)
-
-        with torch.no_grad():
-            next_actions = self._actor_net(non_final_next_states)
-
-        for reward_type in self._reward_types:
-            with torch.no_grad():
-                target_q_values = self._critic_target_net[reward_type](torch.cat((non_final_next_states, next_actions), -1))
-                target_q_values *= self._GAMMA
-                target_q_values = target_q_values.squeeze()
-
-                print(torch.tensor(batch.throughput_reward, device=device, dtype=torch.float32).shape)
-                print(target_q_values.shape)
-
-                if reward_type == 'throughput':
-                    target_q_values += torch.tensor(batch.throughput_reward, device=device, dtype=torch.float32).squeeze()
-                else:
-                    target_q_values += torch.tensor(batch.clique_reward, device=device, dtype=torch.float32).squeeze()
-
-            predicted_q_values = self._critic_net[reward_type](torch.cat((non_final_next_states, next_actions), -1)).squeeze()
-
-            # Calculate Loss 
-            criterion = nn.SmoothL1Loss()
-            loss = criterion(target_q_values, predicted_q_values)
-
-            # Log loss
-            self._loss[reward_type].append(loss.item())
-            with open('loss.pkl', 'wb') as file:
-                pickle.dump(self._loss, file)
-            print(f"{reward_type} Loss: {loss.item():.4f}")
-
-            # Optimization step
-            self._optimizer[reward_type].zero_grad()
-            loss.backward()
-
-            # Clip graidents
-            #torch.nn.utils.clip_grad_value_(self._policy_net[reward_type].parameters(), 100)
-            self._optimizer[reward_type].step()
         
-        self._actor_net.train()
-        self._optimizer['actor'].zero_grad()
-        action_pred = self._actor_net(non_final_next_states)
-        q_values = self._critic_net['throughput'](torch.cat((non_final_next_states, action_pred),-1)) + self._critic_net['clique'](torch.cat((non_final_next_states, action_pred), -1))
-        print(f"q_values: {q_values}")
-        q_values = (q_values.mean())
-        print(f"Actor Loss: {q_values:.4f}")
-        q_values.backward()
-        self._optimizer['actor'].step()
+        for agent in range(self._num_sensors):
+            # Sample a batch of transitions 
+            transitions = self._memory.sample(self._BATCH_SIZE)
+            batch = Transition(*zip(*transitions))
+
+            # Get the non-final states in the batch
+            non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
+            non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
+            non_final_next_states = non_final_next_states.view(-1, 12*self._num_sensors)
+            state_batch = torch.cat(batch.state)
+
+            with torch.no_grad():
+                next_actions = self._actor_net[agent](non_final_next_states)
+
+            for reward_type in self._reward_types:
+                with torch.no_grad():
+                    target_q_values = self._critic_target_net[reward_type][agent](torch.cat((non_final_next_states, next_actions), -1))
+                    target_q_values *= self._GAMMA
+                    target_q_values = target_q_values.squeeze()
+                    
+                    if reward_type == 'throughput':
+                        reward = torch.tensor([r[agent] for r in batch.throughput_reward], device=device, dtype=torch.float32) 
+                    else:
+                        reward = torch.tensor([r[agent] for r in batch.clique_reward], device=device, dtype=torch.float32) 
+
+                    target_q_values += torch.tensor(reward, device=device, dtype=torch.float32).squeeze()
+
+                predicted_q_values = self._critic_net[reward_type][agent](torch.cat((non_final_next_states, next_actions), -1)).squeeze()
+
+                # Calculate Loss 
+                criterion = nn.SmoothL1Loss()
+                loss = criterion(target_q_values, predicted_q_values)
+
+                # Log loss
+                self._loss[reward_type][agent].append(loss.item())
+                #with open('loss.pkl', 'wb') as file:
+                #    pickle.dump(self._loss, file)
+                print(f"{agent} {reward_type} Loss: {loss.item():.4f}")
+
+                # Optimization step
+                self._optimizer[reward_type][agent].zero_grad()
+                loss.backward()
+
+                # Clip graidents
+                #torch.nn.utils.clip_grad_value_(self._policy_net[reward_type].parameters(), 100)
+                self._optimizer[reward_type][agent].step()
+            
+            self._actor_net[agent].train()
+            self._optimizer['actor'][agent].zero_grad()
+            action_pred = self._actor_net[agent](non_final_next_states)
+            q_values = self._critic_net['throughput'][agent](torch.cat((non_final_next_states, action_pred),-1)) + self._critic_net['clique'][agent](torch.cat((non_final_next_states, action_pred), -1))
+            print(f"q_values: {q_values[:5]}")
+            q_values = q_values.mean()
+            print(f"Agent {agent} Actor Loss: {q_values:.4f}")
+            q_values.backward()
+            self._optimizer['actor'][agent].step()
 
     def _select_action(self):
         sample = random.random()
@@ -190,22 +190,24 @@ class WSN_agent:
         #dead_sensors = (energy <= self._recharge_thresh)
         #awake_sensors = (energy > self._recharge_thresh)
 
-        if sample > eps_threshold and self._steps_done >= self._BATCH_SIZE:
+        if sample > eps_threshold:
             print('Getting best action')
-            # Sample an action using the policy 
-            action = self._actor_net(self._state.view(-1))
-            action = torch.round(action).int()
-            action = action.cpu().detach().numpy()
+            actions = torch.zeros(self._num_sensors, dtype=torch.long, device=device)
+            for agent in range(self._num_sensors):
+                # Sample an action using the policy 
+                action = self._actor_net[agent](self._state.view(-1))
+                action = torch.round(action).int()
+                actions[agent] = action
             #action = torch.Tensor.cpu(action)
         else:
             print('Getting random action')
-            action = torch.randint(0, self._sampling_freq, (self._num_sensors,), dtype=torch.long, device=device) 
+            actions = torch.randint(0, self._sampling_freq, (self._num_sensors,), dtype=torch.long, device=device) 
        
         print(f'action: {action}')
         # action[dead_sensors] = 0 # Dont allow dead sensors to transmit
         # action[awake_sensors & (action==0)] = 1 # Force awake sensors to transmit
 
-        return action
+        return actions.cpu().detach().numpy()
 
     def train(self):
         for i_episode in range(self._num_episodes):
@@ -214,7 +216,6 @@ class WSN_agent:
             self._state, self._info = self._env.reset()
             self._state = torch.tensor(self._state, dtype=torch.float32, device=device).unsqueeze(0)
             self._state = torch.tensor(self._state, dtype=torch.float32, device=device)
-            
 
             print(f'State = {self._state}')
             for t in count():
@@ -222,19 +223,16 @@ class WSN_agent:
                 print('Taking next step')
 
                 action = self._select_action()                    
+                
                 # Sample the next frame from the enviornment, and receive a reward
                 observation, throughput_reward, clique_reward, terminated, truncated, _ = self._env.step(self._steps_done, action)
                 
-                # Log the reward
-                self._rewards['throughput'].append(throughput_reward)
-                self._rewards['clique'].append(clique_reward)
-
                 print(f'Throughput reward: {throughput_reward}')
                 print(f'Clique reward: {clique_reward}')
                 
                 # Move the reward onto the correct device (memory, cpu, or gpu)
-                throughput_reward = torch.tensor([throughput_reward], device=device)
-                clique_reward = torch.tensor([clique_reward], device=device)
+                throughput_reward = torch.tensor(throughput_reward, device=device)
+                clique_reward = torch.tensor(clique_reward, device=device)
 
                 done = terminated or truncated
 
@@ -253,22 +251,23 @@ class WSN_agent:
                 # Perform one step of the optimization (on the policy network)
                 self._optimize_model()
 
-                # Update target networks
-                target_net_state_dict = self._actor_target_net.state_dict()
-                policy_net_state_dict = self._actor_net.state_dict()
-                for key in policy_net_state_dict:
-                    target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
-                self._actor_target_net.load_state_dict(target_net_state_dict)
-            
-                for reward_type in self._reward_types:
-                    #if self._train_steps[reward_type] >= self._train_every[reward_type]:
-                    #self._train_steps[reward_type] = 0
-                    # Soft update of the target network's weights
-                    target_net_state_dict = self._critic_target_net[reward_type].state_dict()
-                    policy_net_state_dict = self._critic_net[reward_type].state_dict()
+                for agent in range(self._num_sensors):
+                    # Update target networks
+                    target_net_state_dict = self._actor_target_net[agent].state_dict()
+                    policy_net_state_dict = self._actor_net[agent].state_dict()
                     for key in policy_net_state_dict:
                         target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
-                    self._critic_target_net[reward_type].load_state_dict(target_net_state_dict)
+                    self._actor_target_net[agent].load_state_dict(target_net_state_dict)
+                
+                    for reward_type in self._reward_types:
+                        #if self._train_steps[reward_type] >= self._train_every[reward_type]:
+                        #self._train_steps[reward_type] = 0
+                        # Soft update of the target network's weights
+                        target_net_state_dict = self._critic_target_net[reward_type][agent].state_dict()
+                        policy_net_state_dict = self._critic_net[reward_type][agent].state_dict()
+                        for key in policy_net_state_dict:
+                            target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
+                        self._critic_target_net[reward_type][agent].load_state_dict(target_net_state_dict)
 
                 if done:
                     self._episode_durations.append(t + 1)
@@ -290,6 +289,6 @@ if __name__ == '__main__':
     mininet_server_port = 5000
 
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=512, num_episodes=1, max_steps=3000, LR=0.25e-6, train_every=500, local_mininet_simulation=False, server_ip=mininet_server_ip, server_port=mininet_server_port)
+    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=128, num_episodes=1, max_steps=3000, LR=0.25e-6, train_every=500, local_mininet_simulation=True, server_ip=mininet_server_ip, server_port=mininet_server_port)
     agent.train()
     

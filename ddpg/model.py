@@ -27,15 +27,15 @@ class Actor(nn.Module):
         self._min_freq = min_freq
         self._max_freq = max_freq
         self._device = device
-        w = 512 # number of nodes in a hidden layer
-        num_hidden_layers = 64 
+        w = 64 # number of nodes in a hidden layer
+        num_hidden_layers = 6 
  
         layers = [nn.Linear(n_observations, w), nn.ReLU()]
         for _ in range(num_hidden_layers):
             layers.append(nn.Linear(w,w))
             layers.append(nn.ReLU())
-        layers.append(nn.Linear(w, n_actions))
-        layers.append(nn.ReLU())
+        layers.append(nn.Linear(w, 1))
+        #layers.append(nn.ReLU())
  
         self.layers = nn.Sequential(*layers)
  
@@ -48,10 +48,10 @@ class Actor(nn.Module):
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
     def forward(self, x):
-        actions = self.layers(x).to(self._device)
-        actions = torch.tanh(actions)
-        actions = (actions + 1) / 2 * (self._max_freq - self._min_freq) + self._min_freq
-        return actions
+        action = self.layers(x).to(self._device)
+        action = torch.tanh(action)
+        action = (action + 1) / 2 * (self._max_freq - self._min_freq) + self._min_freq
+        return action
  
 
 # (s, a) -> Q
@@ -59,10 +59,10 @@ class Critic(nn.Module):
     def __init__(self, sampling_freq, n_observations, n_actions, num_sensors, device):
         super(Critic, self).__init__()
         self._device = device
-        w = 512 # number of nodes in a hidden layer
-        num_hidden_layers = 64 
+        w = 64 # number of nodes in a hidden layer
+        num_hidden_layers = 6 
  
-        layers = [nn.Linear(n_observations + n_actions, w), nn.ReLU()]
+        layers = [nn.Linear(n_observations + 1, w), nn.ReLU()]
         for _ in range(num_hidden_layers):
             layers.append(nn.Linear(w,w))
             layers.append(nn.ReLU())
@@ -81,5 +81,3 @@ class Critic(nn.Module):
     # Returns tensor([[left0exp, right0exp]...])
     def forward(self, x):
         return self.layers(x).to(self._device)
- 
-

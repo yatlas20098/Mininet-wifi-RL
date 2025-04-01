@@ -115,8 +115,8 @@ class WSNEnvironment(gym.Env):
         # Execute one step in the environment
         truncated = bool(self.step_count > self.max_steps)
         terminated = False
-        throughput_reward = 0
-        clique_reward = 0
+        throughput_reward = [0] * self.num_sensors
+        clique_reward = [0] * self.num_sensors
 
         # Check termination condition
         if truncated:
@@ -127,7 +127,6 @@ class WSNEnvironment(gym.Env):
         print('Returning reward')
         self.step_count += 1
         
-        print(action)
         similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action)
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
