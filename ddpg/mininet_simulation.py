@@ -255,12 +255,14 @@ class sensor_cluster():
     def receive_rates_from_rl_agent(self):
         while(True):
             packed_data = self._rl_agent.recv(4 * (self._num_sensors))
-            
+
             # Connection terminated by server
             if len(packed_data) == 0:
                 break;
 
             unpacked_data = struct.unpack('!' + 'i'*(self._num_sensors), packed_data)
+
+            print(f"Received request from server for rates {unpacked_data}")
 
             rates = unpacked_data
             for sensor_idx in range(self._num_sensors):
