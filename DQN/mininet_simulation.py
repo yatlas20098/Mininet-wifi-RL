@@ -30,6 +30,19 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 class sensor_cluster():
+    def set_rates(new_rates):
+        for i in range(len(new_rates)):
+            self.transmission_freq_idxs[i] = new_rates[i]
+
+    def establish_connection_with_rl_agent(self):
+        listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listen_port = 5000
+        listen.bind(("0.0.0.0", listen_port))
+        listen.listen(5)
+        print("Listening for connection")
+        self._rl_agent, _ = listen.accept()
+
     """
     Read data received by cluster head from sensors
 
@@ -57,7 +70,8 @@ class sensor_cluster():
                 except (ValueError, IndexError):
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
-            # Update throughputs 
+            # Update throughputs
+            self._previous_throughputs[sensor_id] = self._throughputs[sensor_id]
             self._throughputs[sensor_id] = bytes_received // self._transmission_size # Measured by number of succesful transmissions
         return np.array(data)
 
@@ -105,10 +119,23 @@ class sensor_cluster():
             throughputs - vector of average throughput for each sensor
             reward - reward according to reward function
     """
-    def get_obs(self, log=True):
-        print('\n\nGetting observation')
-        rates = [self._transmission_frequencies[i] for i in self.transmission_freq_idxs]
+    def get_observation(self, rates):
+        # Clear transmissions
+        for i in range(self._num_sensors):
+            self.transmission_freq_idxs[i] = rates[i] 
 
+            # Name of file where transmisions received by the cluster head from sensor i is stored
+            file_name = f'sensor_{self._sensor_ids[i]}.txt'
+
+            # Clear the file for future transmissions
+            # TODO: Lock before clearing?
+            with open(f'{self._log_directory}/ch_received_data/{file_name}', 'r+') as file:
+                file.truncate(0)
+
+        print('\n\nGetting observation')
+        time.sleep(self._observation_time)
+
+        #rates = [self._transmission_frequencies[i] for i in self.transmission_freq_idxs]
         # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = {}
 
@@ -130,10 +157,6 @@ class sensor_cluster():
             if len(sensor_data) > 0:
                 temperature_data[i] = sensor_data
                 data_arrived = True
-
-        if not log:
-            return
-            
 
         # Initalize similarity matrix
         similarity = np.zeros((self._num_sensors, self._num_sensors))
@@ -160,24 +183,20 @@ class sensor_cluster():
         change_in_total_throughput = total_throughput - self._total_throughput
         self._total_throughput = total_throughput
 
-        print(f'Awake sensors: {awake_sensors}')
-        print(f'Rates (Transmissions per second) : {[a for a in self.transmission_freq_idxs]}')
-        print(f'Chunks sent: {list(self._chunks_sent)}')
-        print(f'Throughputs (# of sucessfull transmissions) : {self._throughputs}')
         print(f'Total throughput over observation: {total_throughput} succesfull transmissions')
 
         if total_throughput == 0:
-            # return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, 0, rates)
             return (similarity, self._throughputs, 0, rates)
 
         # Calculate clique reward 
-        maximal_clique_cover = list(maximal_cliques(G)) # Get edge cover of maximal cliques 
-        max_throughput = np.max(self._throughputs)
+        maximal_clique_cover = list(maximal_cliques(G)) # Get edge cover of maximal cliques
         max_clique_throughputs = [max([self._throughputs[node] for node in clique]) for clique in maximal_clique_cover] # Get max throughput for each clique
-        clique_throughput_reward = 0.5 * (np.mean(max_clique_throughputs) / max_throughput - 1)
+        max_clique_throughput = max(max_clique_throughputs)
 
+        clique_reward = 0.5 * ((np.mean(max_clique_throughputs) / max_clique_throughput) - 1)
         throughput_reward = 0.5 * ((change_in_total_throughput / total_throughput) - 1)
-        reward = clique_throughput_reward + throughput_reward
+
+        reward = clique_reward + throughput_reward
         
         self.chunks_sent_log.append(list(self._chunks_sent))
         # Log sensor data and rewards 
@@ -189,7 +208,7 @@ class sensor_cluster():
 
         self.clique_log.append(maximal_clique_cover)
         self.reward_log.append(reward)
-        self.clique_reward_log.append(clique_throughput_reward)
+        self.clique_reward_log.append(clique_reward)
         self.throughput_reward_log.append(throughput_reward)
         
         # Pickle observaion 
@@ -201,12 +220,38 @@ class sensor_cluster():
 
         print(f'Weighted avg energy: {np.average(self._energy)/100}')
         print(f'Reward: {reward}')
-        print(f'Clique reward: {clique_throughput_reward}')
+        print(f'Clique reward: {clique_reward}')
         print(f'Throughput reward: {throughput_reward}')
         
-        #return (similarity, [e / self._full_energy for e in self._energy], self._throughputs, reward, rates)
         return (similarity, self._throughputs, reward, rates)
 
+    def _send_observation_to_rl_agent(self, rates):
+        obs = pickle.dumps(self.get_observation(rates))
+        obs_length = len(obs)
+
+        # Send the size of the observation in byts to the server
+        self._rl_agent.sendall(struct.pack('!I', obs_length))
+
+        # Send the observation to the server
+        self._rl_agent.sendall(obs)
+
+    def receive_rates_from_rl_agent(self):
+        while(True):
+            packed_data = self._rl_agent.recv(4 * (self._num_sensors))
+
+            # Connection terminated by server
+            if len(packed_data) == 0:
+                break;
+
+            unpacked_data = struct.unpack('!' + 'i'*(self._num_sensors), packed_data)
+
+            print(f"Received request from server for rates {unpacked_data}")
+
+            rates = unpacked_data
+            for sensor_idx in range(self._num_sensors):
+                self.transmission_freq_idxs[sensor_idx] = rates[sensor_idx]
+
+            self._send_observation_to_rl_agent(rates)
    
     """
     Create Mininet topology
@@ -250,6 +295,7 @@ class sensor_cluster():
 
         self._num_sensors = len(sensor_ids)
         self._throughputs = [0 for i in range(self._num_sensors)]
+        self._previous_throughputs = [0 for i in range(self._num_sensors)]
         self._total_throughput = 0
         self._max_total_throughput = 0
         self._tcpdump_lines_parsed = [0 for i in range(self._num_sensors)]
@@ -259,7 +305,7 @@ class sensor_cluster():
         self._dataset_directory = dataset_directory
        
         # Rate configuration
-        self.transmission_freq_idxs = multiprocessing.Array('i', [3] * self._num_sensors)
+        self.transmission_freq_idxs = multiprocessing.Array('i', [1] * self._num_sensors)
         self._transmission_frequencies = np.array([8, 16, 32, 64]) # Possible number of times a sensor can transmit per frame
 
         # Energy configuration
@@ -576,3 +622,23 @@ class sensor_cluster():
                 print(f"Aggregation progress: {processed_intervals}/{total_intervals} intervals ({processed_intervals/total_intervals*100:.2f}%)")
 
         print(f"Aggregation completed in {time.time() - start_time:.2f} seconds")
+
+if __name__== '__main__':
+    sensor_ids = range(5,15)
+    observation_time = 1
+    transmission_size = 5*1024
+    transmission_frame_duration = 1
+    file_lines_per_chunk = 1
+    num_transmission_frames = 3000
+
+    cluster = sensor_cluster(sensor_ids, log_directory=f'data/log', observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, num_transmission_frames=num_transmission_frames)
+    cluster.establish_connection_with_rl_agent()
+    cluster_thread = threading.Thread(target=cluster.start, args=())
+    cluster_thread.start()
+
+    receive_rates_thread = threading.Thread(target=cluster.receive_rates_from_rl_agent, args=())
+    receive_rates_thread.start()
+
+    cluster_thread.join()
+    receive_rates_thread.join()
+
