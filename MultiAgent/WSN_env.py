@@ -59,7 +59,7 @@ class WSNEnvironment(gym.Env):
 
         else:
             self._cluster = mininet_server(self.num_sensors, server_ip, server_port)
-            time.sleep(60)
+            time.sleep(10)
 
         self._device = device
 
