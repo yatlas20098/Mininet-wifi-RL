@@ -45,6 +45,7 @@ pip install -r requirements.txt
 #### Run the code:
 
 ```
+cd {MODEL_DIR}
 sudo -E python3 rl_agent.py
 ```
 
