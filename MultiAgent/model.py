@@ -27,8 +27,8 @@ class Actor(nn.Module):
         self._min_freq = min_freq
         self._max_freq = max_freq
         self._device = device
-        w = 64 # number of nodes in a hidden layer
-        num_hidden_layers = 32 
+        w = 128 # number of nodes in a hidden layer
+        num_hidden_layers = 16 
  
         layers = [nn.Linear(n_observations, w), nn.ReLU()]
         for _ in range(num_hidden_layers):
@@ -59,8 +59,8 @@ class Critic(nn.Module):
     def __init__(self, sampling_freq, n_observations, n_actions, num_sensors, device):
         super(Critic, self).__init__()
         self._device = device
-        w = 64 # number of nodes in a hidden layer
-        num_hidden_layers = 32 
+        w = 128 # number of nodes in a hidden layer
+        num_hidden_layers = 16 
  
         layers = [nn.Linear(n_observations + 1, w), nn.ReLU()]
         for _ in range(num_hidden_layers):
