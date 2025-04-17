@@ -20,6 +20,45 @@ import torch.nn.init as init
 
 from WSN_env import WSNEnvironment
 
+class DDQN(nn.Module):
+    def __init__(self, sampling_freq, n_actions, num_sensors):
+        super(DDQN, self).__init__()                
+
+        w = 1024 # number of nodes in a hidden layer
+        num_hidden_layers = 64
+
+        layers = [nn.Linear(n_observations, w), nn.ReLU()]
+        for _ in range(num_hidden_layers):
+            layers.append(nn.Linear(w,w))
+            layers.append(nn.ReLU())
+
+        self._layers = nn.Sequential(*layers)
+
+        # Initalize random weights
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                init.constant_(m.bias, 0)
+
+        self._fc1 = nn.Linear(w, 512)
+        std = math.sqrt(2.0 / (64 * 64 * 3 * 3))
+        nn.init.normal_(self._fc1.weight, mean=0.0, std=std)                                                 
+        self._fc1.bias.data.fill_(0.0)
+        self._V = nn.Linear(512, 1)
+        self._A = nn.Linear(512, sampling_freq)
+
+     # Called with either one element to determine next action, or a batchduring optimization.
+    # Returns tensor([[left0exp, right0exp]...])
+    def forward(self, x):
+        x = self._layers(x).to(device)
+        x = F.relu(self._fc1(x))
+
+        V = self._V(x)
+        A = self._A(x)
+        Q = V + (A - A.mean(dim=0, keepdim=True))
+
+        return Q
+
 # (s,a) -> Q
 class DQN(nn.Module):
     def __init__(self, sampling_freq, n_observations, num_sensors, device):
