@@ -51,13 +51,12 @@ class ReplayMemory(object):
         return len(self.memory)
 
 class WSN_agent:
-    def __init__(self, num_clusters, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.7, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 400, TAU = 0.01, LR = 0.25e-3, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
+    def __init__(self, sensor_ids, sampling_freq = 3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, BATCH_SIZE = 64, GAMMA = 0.7, EPS_START = 1, EPS_END = 0.0, EPS_DECAY = 400, TAU = 0.01, LR = 0.25e-3, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512, local_mininet_simulation=True, server_ip="", server_port=""):
         self._env = WSNEnvironment(max_steps=max_steps, sampling_freq=sampling_freq, sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, recharge_thresh=recharge_thresh, device=device, num_episodes=num_episodes, local_mininet_simulation=local_mininet_simulation, server_ip=server_ip, server_port=server_port) 
         self._num_sensors = len(sensor_ids) 
         self._sampling_freq = sampling_freq # Number of possible transmission frequencies
         self._n_observations = self._num_sensors*self._num_sensors + 2*self._num_sensors
         self._recharge_thresh = recharge_thresh
-        self._num_clusters = num_clusters
         self._num_episodes = num_episodes
         self._train_every = {} # How many steps between updates of target network 
 
@@ -264,17 +263,21 @@ class WSN_agent:
                     #self._train_steps[reward_type] += 1
         
 if __name__ == '__main__':
-    # UIUC Apartement router
-    mininet_server_ip = "10.251.163.138"
-
-    # UIUC campus  
-    #cluster_head_ip = "10.195.111.177"
-
-    #cluster_head_ip = 192.168.0.162
-    # cluster_head_ip = "10.251.162.82"
-    mininet_server_port = 5000
-
+    # Simulation parmaters
     sensor_ids = range(5,15)
-    agent = WSN_agent(num_clusters=1, sensor_ids=sensor_ids, sampling_freq=4, transmission_size=int(2*1500), transmission_frame_duration=1, file_lines_per_chunk=1, observation_time=1, BATCH_SIZE=128, num_episodes=1, max_steps=3000, LR=0.25e-3, train_every=500, local_mininet_simulation=True, server_ip=mininet_server_ip, server_port=mininet_server_port)
+    sampling_freq = 4
+    transmission_size = 2 * 1500
+    observation_time = 1
+    local_mininet_simulation=True
+    server_ip = "0.0.0.0" # IP of mininet simulation; ignored if local_mininet_simulation = True
+    server_port = 5000 # Ignored if local_mininet_simulation = True
+
+    # RL parametrs
+    BATCH_SIZE = 128
+    max_steps = 3000
+    LR=0.25e-3
+    train_every = 500
+    
+    agent = WSN_agent(sensor_ids=sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, BATCH_SIZE=BATCH_SIZE, max_steps=max_steps, LR=LR, train_every=train_every, local_mininet_simulation=True, server_ip=server_ip, server_port=server_port)
     agent.train()
     
