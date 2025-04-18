@@ -154,12 +154,13 @@ class sensor_cluster():
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
 
+            data = data + data # Need more data
             xs = np.arange(len(data)) / 250 
             interp_func = scipy.interpolate.interp1d(xs, data)
             return interp_func
 
     """
-    Get the maximium independent set of highest throughput in the redudancy graph.
+    Get the maximal independent set that maximizes the minimum throughput of a sensor in the set.
 
     Args:
         redudancy_graph (networkx graph): graph with verticies as sensors and edges as similarity between sensors. 
@@ -185,6 +186,21 @@ class sensor_cluster():
 
         independent_set = [v for v in redudancy_graph.nodes if x[v].varValue == 1]
         return independent_set
+
+        # Can also maximize the min throughput for a sensor in the ind set
+        # Objective: maximize min throughput for sensor in ind set
+        #LP += z # mimimum selected sensor throughput
+
+        #M = max(nx.get_node_attributes(G, "throughput").values()) + 1
+        #for v in redudancy_graph.nodes:
+        #    w = redudancy_graph.nodes[v]['throughput']
+        #    LP += z <= w * x[v] + (1 - x[v]) * M
+
+        # Constraint: the independent set is maximal
+        # for v in redudancy_graph.nodes:
+        #    LP += x[v] + lpSum(x[u] for u in redudancy_graph.neighbors(v)) >= 1
+
+
    
     """
     Calculate throughput and similarity rewards.
@@ -195,8 +211,8 @@ class sensor_cluster():
         sensor_effective_throughputs: a list of the effective throughputs for each sensor
 
     Returns:
-        throughput_reward: list of throughput reward for each sensor
-        similarity_reward: list of similarity reward for each sensor
+        throughput_reward (list): throughput reward for each sensor
+        similarity_reward (list): similarity reward for each sensor
         max_ind_set: the maximum indepdent set of highest throughput in the redudancy graph. 
     """
     def _calculate_rewards(self, redudancy_graph, sensor_effective_throughputs):
@@ -211,8 +227,11 @@ class sensor_cluster():
         ind_set_total_throughput = np.sum([redudancy_graph.nodes[v]["throughput"] for v in max_ind_set])
 
         maxF = np.max(self._transmission_frequencies)
-        max_total_throughput = maxF * len(max_ind_set)
-        throughput_reward = [bounded_log(ind_set_total_throughput / max_total_throughput) for i in range(self._num_sensors)]
+        max_total_throughput = maxF * self._num_sensors
+        throughput_reward = [bounded_log(3 * ind_set_total_throughput / max_total_throughput) for i in range(self._num_sensors)]
+
+        #min_throughput = np.min([self._throughputs[i] for i in max_ind_set])
+        #throughput_reward = [bounded_log(min_throughput / maxF) for i in range(self._num_sensors)]
 
         print(f'Max Indepdenent Set: {max_ind_set}')
         return throughput_reward, similarity_reward, max_ind_set
@@ -235,7 +254,6 @@ class sensor_cluster():
 
         # Get list of sensors that had at least one succesfull transmission 
         awake_sensors = list(temperature_data.keys())
-
         sensor_effective_throughputs = self._throughputs.copy()
 
         # Create a graph with veritices representing sensors and edges denoting similarity
@@ -312,7 +330,7 @@ class sensor_cluster():
                 file.truncate(0)
 
         observation_start_time = time.time()
-        print('\n\nGetting observation')
+        print('Getting observation')
 
         time.sleep(self._observation_time)
         true_observation_period_time = (time.time() - observation_start_time) / self._observation_time
@@ -374,7 +392,7 @@ class sensor_cluster():
 
             unpacked_data = struct.unpack('!' + 'i'*(self._num_sensors), packed_data)
 
-            print(f"Received request from server for rates {unpacked_data}")
+            print(f"\n\nReceived request from server for rates {unpacked_data}")
 
             rates = unpacked_data
             for sensor_idx in range(self._num_sensors):
@@ -504,8 +522,6 @@ class sensor_cluster():
         # Create a file to store the packets received by the cluster head
         sensor.cmd(f'touch {self._log_directory}/ch_received_data/sensor_{self._sensor_ids[sensor_idx]}.txt')
        
-        # Index of the next chunk to send 
-        #next_chunk_idx = 0
         chunks_sent = 0
 
         # Port to communicate with the cluser head on 
@@ -530,9 +546,6 @@ class sensor_cluster():
                 info(f'Sensor {sensor_idx}: Energy {self._energy[sensor_idx]} below threshold ({self._recharge_threshold}). Recharging...')
                 time.sleep(self._recharge_time)
 
-                # Skip chunks that could have been transmitted during the recharge time 
-                # next_chunk_idx += (self._recharge_time / self._transmission_frame_duration) // max(self._transmission_frequencies)
-                                
                 # Update the sensors energy and log the new energy level
                 self._energy[sensor_idx] = self._full_energy
                 sensor.energy = energy

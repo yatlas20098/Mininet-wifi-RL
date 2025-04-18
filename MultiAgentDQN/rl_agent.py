@@ -58,7 +58,7 @@ class WSN_agent:
         self._n_observations = self._num_sensors*self._num_sensors + 2*self._num_sensors
         self._recharge_thresh = recharge_thresh
         self._num_episodes = num_episodes
-        self._train_every = {} # How many steps between updates of target network 
+        # self._train_every = {} # How many steps between updates of target network 
 
         self._sensor_ids = sensor_ids
         self._observation_time = observation_time
@@ -72,16 +72,13 @@ class WSN_agent:
         self._target_net = {}
         self._optimizer = {}
         self._loss = {}
-        self._rewards = {}
 
         for reward_type in self._reward_types:
             self._policy_net[reward_type] = [DQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
             self._target_net[reward_type] = [DQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
             
-            self._train_every[reward_type] = train_every
             self._optimizer[reward_type] = [optim.AdamW(self._policy_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
             self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
-            #self._rewards[reward_type][agent] = []
 
         self._memory = ReplayMemory(max_steps*num_episodes)
 
@@ -165,10 +162,10 @@ class WSN_agent:
         self._steps_done += 1
         action = None
 
-        #energy = self._state[:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
-        #energy = energy.squeeze()
-        #dead_sensors = (energy <= self._recharge_thresh)
-        #awake_sensors = (energy > self._recharge_thresh)
+        # energy = self._state[:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
+        # energy = energy.squeeze()
+        # dead_sensors = (energy <= self._recharge_thresh)
+        # awake_sensors = (energy > self._recharge_thresh)
         
         samples = torch.rand(self._num_sensors, device=device)
         exploration_mask = samples <= eps_threshold
@@ -186,20 +183,11 @@ class WSN_agent:
         print("Policy mask: ", policy_mask)
 
         actions[policy_mask] = policy_actions[policy_mask]
-        #for agent in range(self._num_sensors):
-        #    sample = random.random()
-        #    if sample > eps_threshold:
-        #        # Sample an action using the policy 
-        #        action = self._actor_net[agent](self._state.view(-1))
-        #        action = torch.round(action).int()
-        #        actions[agent] = action
-        #    else:
-        #        actions[agent] = torch.randint(0, self._sampling_freq, (1), dtype=torch.long, device=device) 
-           
-        print(f'action: {action}')
         # action[dead_sensors] = 0 # Dont allow dead sensors to transmit
         # action[awake_sensors & (action==0)] = 1 # Force awake sensors to transmit
 
+        print(f'action: {action}')
+        
         return actions
     
     def train(self):
