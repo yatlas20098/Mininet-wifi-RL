@@ -34,7 +34,7 @@ device = torch.device(
         )
 #device = torch.device("cpu")
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'throughput_reward', 'clique_reward'))
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'throughput_reward', 'similarity_reward'))
 
 class ReplayMemory(object):
     def __init__(self, capacity):
@@ -67,7 +67,7 @@ class WSN_agent:
         self._recharge_thresh = recharge_thresh
 
         # Seperate policy network for both reward types
-        self._reward_types = ['throughput', 'clique']
+        self._reward_types = ['throughput', 'similarity']
         self._policy_net = {}
         self._target_net = {}
         self._optimizer = {}
@@ -118,7 +118,7 @@ class WSN_agent:
             action_batch = torch.stack(batch.action)[non_final_mask][:, agent]
 
             throughput_reward = torch.stack(batch.throughput_reward)[non_final_mask]
-            clique_reward = torch.stack(batch.clique_reward)[non_final_mask]
+            similarity_reward = torch.stack(batch.similarity_reward)[non_final_mask]
                         
             for reward_type in self._reward_types:
                 state_action_values = self._policy_net[reward_type][agent](state_batch).gather(1, action_batch.long().unsqueeze(1)).squeeze()
@@ -131,7 +131,7 @@ class WSN_agent:
                 if reward_type == 'throughput':
                     reward = throughput_reward[:, agent]
                 else:
-                    reward = clique_reward[:, agent]
+                    reward = similarity_reward[:, agent]
 
                 predicted_q_values = (next_state_values * self._GAMMA).squeeze() + reward
 
@@ -157,7 +157,7 @@ class WSN_agent:
                 self._optimizer[reward_type][agent].step()
 
         print(f"Average throughput loss: {(total_loss['throughput'] / self._num_sensors):.4f}")
-        print(f"Average clique loss: {(total_loss['clique'] / self._num_sensors):.4f}")
+        print(f"Average similarity loss: {(total_loss['similarity'] / self._num_sensors):.4f}")
 
             
     def _select_action(self):
@@ -177,7 +177,7 @@ class WSN_agent:
         actions = torch.randint(0, self._sampling_freq, (self._num_sensors,), dtype=torch.int, device=device)
 
         with torch.no_grad():
-            action_values = [self._policy_net['throughput'][agent](self._state) + self._policy_net['clique'][agent](self._state) for agent in range(self._num_sensors)]
+            action_values = [self._policy_net['throughput'][agent](self._state) + self._policy_net['similarity'][agent](self._state) for agent in range(self._num_sensors)]
             action_values = torch.stack(action_values) 
             action_probs = F.softmax(action_values, dim=1)
             policy_actions = torch.argmax(action_probs, dim=1)
@@ -216,14 +216,14 @@ class WSN_agent:
                 action = self._select_action()                    
                 
                 # Sample the next frame from the enviornment, and receive a reward
-                observation, throughput_reward, clique_reward, terminated, truncated, _ = self._env.step(self._steps_done, action)
+                observation, throughput_reward, similarity_reward, terminated, truncated, _ = self._env.step(self._steps_done, action)
                 
                 print(f'Throughput reward: {throughput_reward}')
-                print(f'Clique reward: {clique_reward}')
+                print(f'Similarity reward: {similarity_reward}')
                 
                 # Move the reward onto the correct device (memory, cpu, or gpu)
                 throughput_reward = torch.tensor(throughput_reward, device=device)
-                clique_reward = torch.tensor(clique_reward, device=device)
+                similarity_reward = torch.tensor(similarity_reward, device=device)
 
                 done = terminated or truncated
 
@@ -234,7 +234,7 @@ class WSN_agent:
                     next_state = observation.clone().detach()
 
                 # Store the transition in memory
-                self._memory.push(self._state, action, next_state, throughput_reward, clique_reward)
+                self._memory.push(self._state, action, next_state, throughput_reward, similarity_reward)
 
                 # Move to the next state
                 self._state = next_state
@@ -273,9 +273,9 @@ if __name__ == '__main__':
     server_port = 5000 # Ignored if local_mininet_simulation = True
 
     # RL parametrs
-    BATCH_SIZE = 128
+    BATCH_SIZE = 8 
     max_steps = 3000
-    LR=0.25e-3
+    LR = 0.25e-3
     train_every = 500
     
     agent = WSN_agent(sensor_ids=sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, BATCH_SIZE=BATCH_SIZE, max_steps=max_steps, LR=LR, train_every=train_every, local_mininet_simulation=True, server_ip=server_ip, server_port=server_port)
