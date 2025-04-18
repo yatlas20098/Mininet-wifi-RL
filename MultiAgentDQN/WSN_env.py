@@ -68,12 +68,12 @@ class WSNEnvironment(gym.Env):
         # self.num_sensor*self.num_sensor similarity features, self.num_sensors previous throughput features, and self.num_sensors previous transmission rate features 
         #self.observation_space = spaces.Box(low=0, high=1, shape=(self.num_sensors*self.num_sensors + 2*self.num_sensors,), dtype=np.float32)
         # Each sensor has num_sensor similarity features, a feature for its previous throughput, and a feature for its previous transmission rate
-        self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_sensors, self.num_sensors + 2,), dtype=np.float32)
+        #self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_sensors, self.num_sensors + 2,), dtype=np.float32)
 
         self.sampling_freq = sampling_freq
 
         ## Define the action_space
-        self.action_space = spaces.MultiDiscrete([self.sampling_freq] * self.num_sensors)
+        #self.action_space = spaces.MultiDiscrete([self.sampling_freq] * self.num_sensors)
 
         # Internal state variables
         self.step_count = 0
