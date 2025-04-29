@@ -19,7 +19,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.init as init
 
 from WSN_env import WSNEnvironment
-from models import DQN 
+from models import DDQN 
 
 is_ipython = 'inline' in matplotlib.get_backend()
 if is_ipython:
@@ -75,15 +75,16 @@ class WSN_agent:
         self._rewards = {}
 
         for reward_type in self._reward_types:
-            self._policy_net[reward_type] = [DQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
-            self._target_net[reward_type] = [DQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
+            self._policy_net[reward_type] = [DDQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
+            self._target_net[reward_type] = [DDQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
             
             self._train_every[reward_type] = train_every
             self._optimizer[reward_type] = [optim.AdamW(self._policy_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
             self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
             #self._rewards[reward_type][agent] = []
 
-        self._memory = ReplayMemory(max_steps*num_episodes)
+        memory_capacity = 800 
+        self._memory = ReplayMemory(memory_capacity)
 
         self._steps_done = 0
         self._episode_durations = []
@@ -143,9 +144,6 @@ class WSN_agent:
                 self._loss[reward_type][agent].append(loss.item())
                 total_loss[reward_type] += loss.item()
 
-                
-                #with open('loss.pkl', 'wb') as file:
-                #    pickle.dump(self._loss, file)
                 #print(f"{agent} {reward_type} Loss: {loss.item():.4f}")
 
                 # Optimization step
@@ -158,12 +156,16 @@ class WSN_agent:
 
         print(f"Average throughput loss: {(total_loss['throughput'] / self._num_sensors):.4f}")
         print(f"Average similarity loss: {(total_loss['similarity'] / self._num_sensors):.4f}")
-
+        with open(f'loss.pkl', 'wb') as file:
+            pickle.dump(self._loss, file)
             
     def _select_action(self):
         eps_threshold = self._EPS_END + (self._EPS_START - self._EPS_END) * math.exp(-1. * self._steps_done / self._EPS_DECAY)
         self._steps_done += 1
         action = None
+
+        #if eps_threshold < 0.2:
+        #    eps_threshold = 0
 
         #energy = self._state[:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
         #energy = energy.squeeze()
@@ -177,9 +179,12 @@ class WSN_agent:
         actions = torch.randint(0, self._sampling_freq, (self._num_sensors,), dtype=torch.int, device=device)
 
         with torch.no_grad():
-            action_values = [self._policy_net['throughput'][agent](self._state) + self._policy_net['similarity'][agent](self._state) for agent in range(self._num_sensors)]
-            action_values = torch.stack(action_values) 
+            #action_values = [self._policy_net['throughput'][agent](self._state) + self._policy_net['similarity'][agent](self._state) for agent in range(self._num_sensors)]
+            action_values = [self._policy_net['throughput'][agent](self._state) for agent in range(self._num_sensors)]
+            action_values = torch.stack(action_values)
+            print(action_values)
             action_probs = F.softmax(action_values, dim=1)
+            print(action_probs)
             policy_actions = torch.argmax(action_probs, dim=1)
             policy_actions = torch.round(policy_actions).int().squeeze()
 
@@ -266,18 +271,21 @@ if __name__ == '__main__':
     # Simulation parmaters
     sensor_ids = range(5,15)
     sampling_freq = 4
-    transmission_size = 2 * 1500
+    transmission_size = 2*1500
     observation_time = 1
-    local_mininet_simulation=True
-    server_ip = "0.0.0.0" # IP of mininet simulation; ignored if local_mininet_simulation = True
+    local_mininet_simulation = False 
+    server_ip = "10.192.135.56" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
 
     # RL parametrs
-    BATCH_SIZE = 8 
+    BATCH_SIZE = 512 
+    GAMMA = 0.99
+    EPS_DECAY = 100 
+    EPS_START = 1
+    EPS_END = 0
     max_steps = 3000
     LR = 0.25e-3
-    train_every = 500
     
-    agent = WSN_agent(sensor_ids=sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, BATCH_SIZE=BATCH_SIZE, max_steps=max_steps, LR=LR, train_every=train_every, local_mininet_simulation=True, server_ip=server_ip, server_port=server_port)
+    agent = WSN_agent(sensor_ids=sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, BATCH_SIZE=BATCH_SIZE, max_steps=max_steps, LR=LR, EPS_DECAY=EPS_DECAY, EPS_START=EPS_START, EPS_END=EPS_END, GAMMA=GAMMA, local_mininet_simulation=local_mininet_simulation, server_ip=server_ip, server_port=server_port)
     agent.train()
     
