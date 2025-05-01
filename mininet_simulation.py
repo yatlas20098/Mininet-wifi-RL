@@ -15,7 +15,7 @@ import time
 import math
 import pickle
 import networkx as nx
-#from networkx.algorithms.clique import find_cliques as maximal_cliques, approximation as approx
+from networkx.algorithms import approximation as approx
 from pulp import LpProblem, LpMaximize, LpVariable, lpSum, LpBinary, PULP_CBC_CMD
 from itertools import combinations
 from ortools.linear_solver import pywraplp
@@ -223,12 +223,13 @@ class sensor_cluster():
         similarity_reward = [bounded_log(sensor_effective_throughputs[i] / max_throughput) for i in range(self._num_sensors)]
 
         # Get throughput reward 
-        max_ind_set = self._get_max_ind_set(redudancy_graph)
-        ind_set_total_throughput = np.sum([redudancy_graph.nodes[v]["throughput"] for v in max_ind_set])
+        ind_set_with_max_throughput = self._get_max_ind_set(redudancy_graph)
+        ind_set_total_throughput = np.sum([redudancy_graph.nodes[v]["throughput"] for v in ind_set_with_max_throughput])
 
+        max_ind_set = approx.maximum_independent_set(redudancy_graph) 
         maxF = np.max(self._transmission_frequencies)
-        total_throughput_bound =  maxF * self._num_sensors
-        throughput_reward = [3 * bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
+        total_throughput_bound = len(max_ind_set) * maxF 
+        throughput_reward = [bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
 
         #min_throughput = np.min([self._throughputs[i] for i in max_ind_set])
         #throughput_reward = [bounded_log(min_throughput / maxF) for i in range(self._num_sensors)]
