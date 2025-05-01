@@ -214,7 +214,7 @@ class WSN_agent:
                 # Sample the next frame from the enviornment, and receive a reward
                 observation, throughput_reward, similarity_reward, terminated, truncated, _ = self._env.step(self._steps_done, action)
                 
-                print(f'Throughput reward: {throughput_reward}')
+                print(f'Throughput reward: {throughput_reward[0]}')
                 print(f'Similarity reward: {similarity_reward}')
                 
                 # Move the reward onto the correct device (memory, cpu, or gpu)
@@ -226,7 +226,6 @@ class WSN_agent:
                 if terminated:
                     next_state = None
                 else:
-                    #next_state = observation.clone().detach()
                     next_state = observation.clone().detach()
 
                 # Store the transition in memory
@@ -235,9 +234,6 @@ class WSN_agent:
                 # Move to the next state
                 self._state = next_state
                 
-                if t > 400:
-                    continue
-
                 # Perform one step of the optimization (on the policy network)
                 self._optimize_model()
 
