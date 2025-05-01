@@ -153,7 +153,7 @@ class WSN_agent:
         print(f"Average throughput loss: {(total_loss['throughput'] / self._num_sensors):.4f}")
         print(f"Average similarity loss: {(total_loss['similarity'] / self._num_sensors):.4f}")
         with open(f'loss.pkl', 'wb') as file:
-            pickle.dump(self._loss, file)
+            pickle.dump((self._BATCH_SIZE, self._loss), file)
             
     def _select_action(self):
         eps_threshold = self._EPS_END + (self._EPS_START - self._EPS_END) * math.exp(-1. * self._steps_done / self._EPS_DECAY)
@@ -182,9 +182,9 @@ class WSN_agent:
             #action_values = [self._policy_net['throughput'][agent](self._state) + self._policy_net['similarity'][agent](self._state) for agent in range(self._num_sensors)]
             action_values = [self._policy_net['throughput'][agent](self._state) for agent in range(self._num_sensors)]
             action_values = torch.stack(action_values)
+            print("Q values for action:")
             print(action_values)
             action_probs = F.softmax(action_values, dim=1)
-            print(action_probs)
             policy_actions = torch.argmax(action_probs, dim=1)
             policy_actions = torch.round(policy_actions).int().squeeze()
 
@@ -267,12 +267,12 @@ if __name__ == '__main__':
     sampling_freq = 4
     transmission_size = 2*1500
     observation_time = 1
-    local_mininet_simulation = False 
+    local_mininet_simulation = True 
     server_ip = "10.251.169.23" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
 
     # RL parametrs
-    BATCH_SIZE = 64 
+    BATCH_SIZE = 16 
     GAMMA = 0.70
     EPS_DECAY = 200 
     EPS_START = 1

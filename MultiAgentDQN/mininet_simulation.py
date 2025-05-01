@@ -227,8 +227,8 @@ class sensor_cluster():
         ind_set_total_throughput = np.sum([redudancy_graph.nodes[v]["throughput"] for v in max_ind_set])
 
         maxF = np.max(self._transmission_frequencies)
-        max_total_throughput = maxF * self._num_sensors
-        throughput_reward = [bounded_log(3 * ind_set_total_throughput / max_total_throughput) for i in range(self._num_sensors)]
+        total_throughput_bound =  maxF * self._num_sensors
+        throughput_reward = [3 * bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
 
         #min_throughput = np.min([self._throughputs[i] for i in max_ind_set])
         #throughput_reward = [bounded_log(min_throughput / maxF) for i in range(self._num_sensors)]
@@ -334,7 +334,7 @@ class sensor_cluster():
 
         time.sleep(self._observation_time)
         true_observation_period_time = (time.time() - observation_start_time) / self._observation_time
-        self._throughput = [t / true_observation_period_time for t in self._throughputs]
+        self._throughputs = [t / true_observation_period_time for t in self._throughputs]
 
         # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = self._get_temperature_data()
