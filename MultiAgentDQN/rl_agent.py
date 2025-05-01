@@ -32,7 +32,6 @@ device = torch.device(
         "mps" if torch.backends.mps.is_available() else
         "cpu"
         )
-#device = torch.device("cpu")
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'throughput_reward', 'similarity_reward'))
 
@@ -80,7 +79,7 @@ class WSN_agent:
             self._optimizer[reward_type] = [optim.AdamW(self._policy_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
             self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
 
-        memory_capacity = 800 
+        memory_capacity = 256 
         self._memory = ReplayMemory(memory_capacity)
 
         self._steps_done = 0
@@ -148,7 +147,7 @@ class WSN_agent:
                 loss.backward()
 
                 # Clip graidents
-                #torch.nn.utils.clip_grad_value_(self._policy_net[reward_type].parameters(), 100)
+                torch.nn.utils.clip_grad_value_(self._policy_net[reward_type][agent].parameters(), 1)
                 self._optimizer[reward_type][agent].step()
 
         print(f"Average throughput loss: {(total_loss['throughput'] / self._num_sensors):.4f}")
@@ -161,7 +160,6 @@ class WSN_agent:
         self._steps_done += 1
         action = None
 
-<<<<<<< HEAD
         #if eps_threshold < 0.2:
         #    eps_threshold = 0
 
@@ -169,12 +167,10 @@ class WSN_agent:
         #energy = energy.squeeze()
         #dead_sensors = (energy <= self._recharge_thresh)
         #awake_sensors = (energy > self._recharge_thresh)
-=======
         # energy = self._state[:, self._num_sensors*self._num_sensors: self._num_sensors*self._num_sensors + self._num_sensors]
         # energy = energy.squeeze()
         # dead_sensors = (energy <= self._recharge_thresh)
         # awake_sensors = (energy > self._recharge_thresh)
->>>>>>> f8edf78c2dfd7759ac484f7418f1ff6920f84c8f
         
         samples = torch.rand(self._num_sensors, device=device)
         exploration_mask = samples <= eps_threshold
@@ -238,7 +234,10 @@ class WSN_agent:
 
                 # Move to the next state
                 self._state = next_state
-               
+                
+                if t > 400:
+                    continue
+
                 # Perform one step of the optimization (on the policy network)
                 self._optimize_model()
 
@@ -269,17 +268,17 @@ if __name__ == '__main__':
     transmission_size = 2*1500
     observation_time = 1
     local_mininet_simulation = False 
-    server_ip = "10.192.135.56" # IP of mininet simulation; ignored if local_mininet_simulation = True
+    server_ip = "10.251.169.23" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
 
     # RL parametrs
-    BATCH_SIZE = 512 
-    GAMMA = 0.99
-    EPS_DECAY = 100 
+    BATCH_SIZE = 64 
+    GAMMA = 0.70
+    EPS_DECAY = 200 
     EPS_START = 1
     EPS_END = 0
     max_steps = 3000
-    LR = 0.25e-3
+    LR = 0.25e-2
     
     agent = WSN_agent(sensor_ids=sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, BATCH_SIZE=BATCH_SIZE, max_steps=max_steps, LR=LR, EPS_DECAY=EPS_DECAY, EPS_START=EPS_START, EPS_END=EPS_END, GAMMA=GAMMA, local_mininet_simulation=local_mininet_simulation, server_ip=server_ip, server_port=server_port)
     agent.train()

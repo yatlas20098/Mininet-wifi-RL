@@ -25,8 +25,8 @@ class DDQN(nn.Module):
         super(DDQN, self).__init__()
         self._device = device
 
-        w = 360 # number of nodes in a hidden layer
-        num_hidden_layers = 5  
+        w = 2048 # number of nodes in a hidden layer
+        num_hidden_layers = 12  
 
         layers = [nn.Linear(n_observations, w), nn.ReLU()]
         for _ in range(num_hidden_layers):

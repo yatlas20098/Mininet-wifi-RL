@@ -21,7 +21,10 @@ import matplotlib.pyplot as plt
 import pickle
 import dill
 
-from mininet_simulation import sensor_cluster
+try:
+    from mininet_simulation import sensor_cluster
+except ImportError:
+    pass
 
 from server import mininet_server
 #SAMPLING_FREQ = [1,2,3]
