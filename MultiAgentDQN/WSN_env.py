@@ -14,10 +14,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import threading
 import multiprocessing
-#import msgpack
 import matplotlib.pyplot as plt
-#from msgpack_numpy import patch as msgpack_numpy_patch
-#msgpack_numpy_patch()
 import pickle
 import dill
 
@@ -27,9 +24,6 @@ except ImportError:
     pass
 
 from server import mininet_server
-#SAMPLING_FREQ = [1,2,3]
-# TOTAL_ENERGY = 100
-#log_directory = "log"
 
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
@@ -121,7 +115,6 @@ class WSNEnvironment(gym.Env):
         # Check termination condition
         if truncated:
             terminated = True
-            #self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device)
             return self._state, throughput_reward, clique_reward, terminated, truncated, self.info
 
         print('Returning reward')

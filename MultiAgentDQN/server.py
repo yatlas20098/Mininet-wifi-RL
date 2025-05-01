@@ -22,13 +22,11 @@ class mininet_server:
             self._cluster_head = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._cluster_head.settimeout(100)
             print("Socket successfully created")
-            
-            self._cluster_head.connect((cluster_head_ip, cluster_port))
-            print("Successfully connected to server")
         except socket.error as err:
             print(f'Socket creation failed with err {err}')
      
-        
+        self._cluster_head.connect((cluster_head_ip, cluster_port))
+        print("Successfully connected to mininet server")
     
     def get_observation(self, new_rates):
         try:
@@ -47,12 +45,7 @@ class mininet_server:
                     continue
                 obs += chunk
      
-            return pickle.loads(obs)
-            print(f'Observation received:')
-
-            # Dump observation for RL agent
-            with open('obs.pkl', 'wb') as file:
-                pickle.dump((similarity, throughputs, throughput_reward, clique_reward, rates), file)
+            return pickle.loads(obs) # convert observation from bytes
         
         except socket.error as err:
             print(f'Error getting observation: {err}')
