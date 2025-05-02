@@ -25,7 +25,7 @@ class mininet_server:
         except socket.error as err:
             print(f'Socket creation failed with err {err}')
      
-        self._cluster_head.connect((cluster_head_ip, cluster_port))
+        self._cluster_head.connect((cluster_head_ip, port))
         print("Successfully connected to mininet server")
     
     def get_observation(self, new_rates):
