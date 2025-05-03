@@ -86,7 +86,7 @@ with open(file_path, 'rb') as file:
 
 # Plot throughput and chunks lost
 throughput_log = np.array(throughput_log).T
-throughput = [np.sum(t) for t in throughput_log if np.sum(t) < 1000]
+throughput = [np.sum(t) for t in throughput_log]
 chunks_sent = [np.sum(c) for c in chunks_sent_log]
 
 total_throughput = [throughput[0]]
@@ -127,7 +127,7 @@ create_plot(similarity_average_loss, 'Similarity Trainning Loss', 'Step', 'Loss'
 # Plot rewards
 throughput_rewards = np.array(throughput_reward_log).reshape(-1, 10)
 average_throughput_rewards = np.mean(throughput_rewards, axis=1)
-np.clip(average_throughput_rewards, -1, 0, out=average_throughput_rewards) # Clip for better readability 
+np.clip(average_throughput_rewards, -2, 0, out=average_throughput_rewards) # Clip for better readability
 create_plot(average_throughput_rewards, 'Throughput Rewards', 'Step', 'Reward', 'throughput_reward', average=100)
 
 similarity_rewards = np.array(similarity_reward_log).reshape(-1, 10)
