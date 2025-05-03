@@ -154,7 +154,7 @@ class sensor_cluster():
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
 
-            data = data + data # Need more data
+            data = data*20 # Need more data
             xs = np.arange(len(data)) / 250 
             interp_func = scipy.interpolate.interp1d(xs, data)
             return interp_func
@@ -228,7 +228,7 @@ class sensor_cluster():
 
         max_ind_set = approx.maximum_independent_set(redudancy_graph) 
         maxF = np.max(self._transmission_frequencies)
-        total_throughput_bound = len(max_ind_set) * maxF 
+        total_throughput_bound = (len(max_ind_set) + 1) * maxF 
         throughput_reward = [bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
 
         #min_throughput = np.min([self._throughputs[i] for i in max_ind_set])
@@ -772,7 +772,7 @@ class sensor_cluster():
 if __name__== '__main__':
     sensor_ids = range(5,15)
     observation_time = 1
-    transmission_size = 5*1024
+    transmission_size = 2*1024
     transmission_frame_duration = 1
     file_lines_per_chunk = 1
     num_transmission_frames = 3000
