@@ -86,6 +86,14 @@ class WSNEnvironment(gym.Env):
         self.similarity = 0
         self.similarity_penalty = 0
 
+    def networkx_to_GNN_input(graph):
+        node_features = torch.tensor([list(G.nodes[node].values()) for node in G.nodes], dtype=torch.float)
+        edge_list = list(G.edges())
+
+        edge_index = torch.tensor([[u, v] for u, v in edge_list], dtype=torch.long).t().contiguous()
+
+        return (node_features, edge_index) 
+
     def reset(self, seed=0):
         # Initialize the environment at the start of each episode
         self.step_count = 0
@@ -95,11 +103,12 @@ class WSNEnvironment(gym.Env):
         for i in range(self.num_sensors):
             self.info['sensor ' + str(i)] = set()
 
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self.num_sensors)
+        redudancy_graph, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self.num_sensors)
+        self._state = networkx_to_GNN_input(redudancy_graph)
 
-        self._state = np.column_stack((similarity, rates, throughputs))
-        self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
-        self._state = torch.flatten(self._state)
+        #self._state = np.column_stack((similarity, rates, throughputs))
+        #self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
+        #self._state = torch.flatten(self._state)
 
         return self._state, self.info
 
@@ -120,9 +129,12 @@ class WSNEnvironment(gym.Env):
         print('Returning reward')
         self.step_count += 1
         
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action.cpu().detach().numpy())
-        self._state = np.column_stack((similarity, rates, throughputs))
-        self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
-        self._state = torch.flatten(self._state)
+        redudancy_graph, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self.num_sensors)
+        self._state = networkx_to_geometric(redudancy_graph)
+
+        #similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action.cpu().detach().numpy())
+        #self._state = np.column_stack((similarity, rates, throughputs))
+        #self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
+        #self._state = torch.flatten(self._state)
 
         return self._state, throughput_reward, clique_reward, terminated, truncated, self.info
