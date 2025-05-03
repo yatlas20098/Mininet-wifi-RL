@@ -17,6 +17,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.init as init
+from torch_geometric.nn import GCNConv 
 
 from WSN_env import WSNEnvironment
 
@@ -25,8 +26,8 @@ class DDQN(nn.Module):
         super(DDQN, self).__init__()
         self._device = device
 
-        w = 128 # number of nodes in a hidden layer
-        num_hidden_layers = 12  
+        w = 130 # number of nodes in a hidden layer
+        num_hidden_layers = 128 
 
         layers = [nn.Linear(n_observations, w), nn.ReLU()]
         for _ in range(num_hidden_layers):
@@ -94,15 +95,14 @@ class Actor(nn.Module):
         self._min_freq = min_freq
         self._max_freq = max_freq
         self._device = device
-        w = 128 # number of nodes in a hidden layer
-        num_hidden_layers = 16 
+        w = 100 # number of nodes in a hidden layer
+        num_hidden_layers = 100 
  
-        layers = [nn.Linear(n_observations, w), nn.ReLU()]
+        layers = [nn.Linear(n_observations, w), nn.LeakyReLU()]
         for _ in range(num_hidden_layers):
             layers.append(nn.Linear(w,w))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU())
         layers.append(nn.Linear(w, 1))
-        #layers.append(nn.ReLU())
  
         self.layers = nn.Sequential(*layers)
  
@@ -119,23 +119,23 @@ class Actor(nn.Module):
         action = torch.tanh(action)
         action = (action + 1) / 2 * (self._max_freq - self._min_freq) + self._min_freq
         return action
- 
 
 # (s, a) -> Q
 class Critic(nn.Module):
     def __init__(self, sampling_freq, n_observations, n_actions, num_sensors, device):
         super(Critic, self).__init__()
         self._device = device
-        w = 128 # number of nodes in a hidden layer
-        num_hidden_layers = 16
+        w = 100 # number of nodes in a hidden layer
+        num_hidden_layers = 100 
  
-        layers = [nn.Linear(n_observations + 1, w), nn.ReLU()]
+        layers = [nn.Linear(n_observations + 1, w), nn.LeakyReLU()]
         for _ in range(num_hidden_layers):
             layers.append(nn.Linear(w,w))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU())
         layers.append(nn.Linear(w, 1))
  
         self.layers = nn.Sequential(*layers)
+
         # Initalize random weights
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -146,3 +146,34 @@ class Critic(nn.Module):
     # Returns tensor([[left0exp, right0exp]...])
     def forward(self, x):
         return self.layers(x).to(self._device)
+
+class ActorGNN(nn.Module):
+    def __init__(self, input_dimension, num_hidden_layers, hidden_layer_dimension, sampling_freq, device):
+        super(ActorGNN, self).__init__()
+        self._device = device
+
+        layers = [GCNConv(input_dimension, hidden_layer_dimension), nn.ReLU()]
+        for _ in range(num_hidden_layers):
+            layers.append(GCNConv(input_dimension, hidden_layer_dimension))
+            layers.append(nn.ReLU())
+        layers.append(nn.Linear(hidden_layer_dimension, sampling_freq))
+        self._layers = nn.Sequential(*layers)
+
+    def forward(self, x, edge_index):
+        return self.layers(x, edge_index).to(self._device)
+
+class CriticGNN(nn.Module):
+    def __init__(self, input_dimension, num_hidden_layers, hidden_layer_dimension, device):
+        super(CriticGNN, self).__init__()
+        self._device = device
+
+        layers = [GCNConv(input_dimension + 1, hidden_layer_dimension), nn.ReLU()] # +1 accounts for action
+        for _ in range(num_hidden_layers):
+            layers.append(GCNConv(hidden_layer_dimension, hidden_layer_dimension))
+            layers.append(nn.ReLU())
+        layers.append(nn.Linear(hidden_layer_dimension, 1))
+        self._layers = nn.Sequential(*layers)
+
+    def forward(self, x, edge_index):
+        return self._layers(x, edge_index)
+
