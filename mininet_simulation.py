@@ -249,7 +249,7 @@ class sensor_cluster():
         sensor_effective_throughputs: a list of the effective throughputs for each sensor (i.e. fixing a sensor s, the maximium throughput of a sensor - possibily s itself - transmitting similar data to s)
     """
 
-    def _compute_similarity_and_redudancy_graph(self, temperature_data):
+    def _compute_similarity_and_redudancy_graph(self, temperature_data, rates):
         # Initalize similarity matrix
         similarity = np.zeros((self._num_sensors, self._num_sensors))
 
@@ -259,7 +259,7 @@ class sensor_cluster():
 
         # Create a graph with veritices representing sensors and edges denoting similarity
         redudancy_graph = nx.Graph()
-        redudancy_graph.add_nodes_from([(i, {"throughput": self._throughputs[i]}) for i in range(self._num_sensors)])
+        redudancy_graph.add_nodes_from([(i, {"throughput": self._throughputs[i], "rate": rates[i]}) for i in range(self._num_sensors)])
 
         for i in range(len(awake_sensors)):
             for j in range(i + 1, len(awake_sensors)):
@@ -350,8 +350,8 @@ class sensor_cluster():
         #print(f'Throughputs (# of sucessfull transmissions) : {self._throughputs}')
         print(f'Total throughput over observation: {total_throughput} succesfull transmissions')
 
-        if total_throughput == 0:
-            return (similarity, self._throughputs, [0]*self._num_sensors, [0]*self._num_sensors, rates)
+        #if total_throughput == 0:
+        #    return (similarity, self._throughputs, [0]*self._num_sensors, [0]*self._num_sensors, rates)
 
         throughput_reward, similarity_reward, max_ind_set = self._calculate_rewards(redudancy_graph, sensor_effective_throughputs) 
 
@@ -371,7 +371,8 @@ class sensor_cluster():
         with open('figure_data.pkl', 'wb') as file:
             pickle.dump((self._sensor_ids, self._transmission_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.similarity_reward_log, self.throughput_reward_log, self.max_ind_set_log, self.chunks_sent_log), file)
 
-        return (similarity, self._throughputs, throughput_reward, similarity_reward, rates)
+        #return (similarity, self._throughputs, throughput_reward, similarity_reward, rates)
+        return (redudancy_graph, throughput_reward, similarity_reward, rates)
 
     def _send_observation_to_rl_agent(self, rates):
         obs = pickle.dumps(self.get_observation(rates))
