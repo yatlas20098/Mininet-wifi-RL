@@ -199,6 +199,7 @@ class WSN_agent:
     
     def train(self):
         train_steps = 0
+        throughput_reward_log = [-1 for _ in range(10)]
         for i_episode in range(self._num_episodes):
             # Initialize the environment and get its state
             print(self._env.reset())
@@ -217,9 +218,12 @@ class WSN_agent:
                 print(f'Throughput reward: {throughput_reward[0]}')
                 print(f'Similarity reward: {similarity_reward}')
                 
+                throughput_reward_log.append(throughput_reward[0])
+                
                 # Move the reward onto the correct device (memory, cpu, or gpu)
                 throughput_reward = torch.tensor(throughput_reward, device=device, dtype=torch.float32)
                 similarity_reward = torch.tensor(similarity_reward, device=device, dtype=torch.float32)
+
 
                 done = terminated or truncated
 
@@ -228,8 +232,10 @@ class WSN_agent:
                 else:
                     next_state = observation.clone().detach()
 
-                # Store the transition in memory
-                self._memory.push(self._state, action, next_state, throughput_reward, similarity_reward)
+                avg_reward = np.mean(throughput_reward[:-10])
+                if throughput_reward[0] < avg_reward: 
+                    # Store the transition in memory
+                    self._memory.push(self._state, action, next_state, throughput_reward, similarity_reward)
 
                 # Move to the next state
                 self._state = next_state
