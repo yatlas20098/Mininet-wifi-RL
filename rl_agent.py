@@ -108,7 +108,7 @@ class PrioritizedReplayMemory:
         self.size = buffer_size
     
     def __len__(self):
-        return len(self.memory)
+        return self.real_size
 
     def push(self, *args):
         #self.memory.append(Transition(*args))
@@ -148,7 +148,7 @@ class PrioritizedReplayMemory:
             # tree_idx is a index of a sample in the tree, needed further to update priorities
             tree_idx, priority, sample_idx = self.tree.get(cumsum)
 
-            priorities[i] = priority
+            priorities[i] = torch.from_numpy(np.array(priority))
             tree_idxs.append(tree_idx)
             sample_idxs.append(sample_idx)
 
@@ -437,8 +437,8 @@ if __name__ == '__main__':
     sampling_freq = 4
     transmission_size = 2*1500
     observation_time = 1
-    local_mininet_simulation = True 
-    server_ip = "10.192.135.56" # IP of mininet simulation; ignored if local_mininet_simulation = True
+    local_mininet_simulation = False 
+    server_ip = "192.168.0.162" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
 
     # RL parametrs
