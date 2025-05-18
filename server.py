@@ -11,7 +11,7 @@ log_directory = 'log'
 if not os.path.exists(log_directory):
     os.makedirs(log_directory)
 
-class mininet_server:
+class Mininet_Remote_Session:
     def set_rates(self, new_rates):
         # Send rates to cluster head
         packed_data = struct.pack('!' + 'i'*self.num_sensors, *action)

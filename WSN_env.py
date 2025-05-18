@@ -19,31 +19,23 @@ import pickle
 import dill
 
 try:
-    from mininet_simulation import sensor_cluster
+    from mininet_simulation import sensor_cluster, Mininet_Simulation_Parameters
 except ImportError:
     pass
 
-from server import mininet_server
+from server import Mininet_Remote_Session 
+
 
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
     
-    def __init__(self, sensor_ids, device, observation_time=10, transmission_size=4*1024, transmission_frame_duration=1, file_lines_per_chunk=5, recharge_thresh=0.2, sensor_coverage=0.4, sampling_freq=4, max_steps=100, num_episodes=10, local_mininet_simulation=True, server_ip="", server_port=""):
+    def __init__(self, mininet_simulation_parameters, max_steps, device):
         super(WSNEnvironment, self).__init__()
 
         # Environment parameters
-        self.num_sensors = len(sensor_ids) 
-        self.sensor_ids = sensor_ids
-        self.sensor_coverage = sensor_coverage
-        self.max_steps = max_steps
-        self.recharge_thresh=recharge_thresh
-        self.alpha=0.6
-        self.beta=0.3
-        self.observation_time = observation_time
-        num_transmission_frames = 1*((max_steps * num_episodes * observation_time) // transmission_frame_duration) + 1000 # include extra frames as buffer
-        self._local_mininet_simulation = local_mininet_simulation
-        if local_mininet_simulation:
-            self._cluster = sensor_cluster(sensor_ids, log_directory=f'data/log', observation_time=self.observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, num_transmission_frames=num_transmission_frames)
+        self._num_sensors = len(mininet_simulation_parameters.sensor_ids) 
+        if mininet_simulation_parameters.local_simulation:
+            self._cluster = sensor_cluster(mininet_simulation_parameters)
             print("Starting cluster\n")
             cluster_process = multiprocessing.Process(target=self._cluster.start, args=())
             cluster_process.start()
@@ -52,10 +44,11 @@ class WSNEnvironment(gym.Env):
             time.sleep(10)
 
         else:
-            self._cluster = mininet_server(self.num_sensors, server_ip, server_port)
+            self._cluster = mininet_server(self._num_sensors, server_ip, server_port)
             time.sleep(10)
 
         self._device = device
+        self._max_steps = max_steps
 
         self.step_log = []
 
@@ -67,7 +60,7 @@ class WSNEnvironment(gym.Env):
         # Each sensor has num_sensor similarity features, a feature for its previous throughput, and a feature for its previous transmission rate
         #self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_sensors, self.num_sensors + 2,), dtype=np.float32)
 
-        self.sampling_freq = sampling_freq
+        #self.sampling_freq = sampling_freq
 
         ## Define the action_space
         #self.action_space = spaces.MultiDiscrete([self.sampling_freq] * self.num_sensors)
@@ -92,10 +85,10 @@ class WSNEnvironment(gym.Env):
         self.generated_events = 0
         self.info = {'captured': 0, 'non-captured': 0}
 
-        for i in range(self.num_sensors):
+        for i in range(self._num_sensors):
             self.info['sensor ' + str(i)] = set()
 
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self.num_sensors)
+        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self._num_sensors)
 
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
@@ -107,10 +100,10 @@ class WSNEnvironment(gym.Env):
         print(f"Step action: {action}")
 
         # Execute one step in the environment
-        truncated = bool(self.step_count > self.max_steps)
+        truncated = bool(self.step_count > self._max_steps)
         terminated = False
-        throughput_reward = [0] * self.num_sensors
-        clique_reward = [0] * self.num_sensors
+        throughput_reward = [0] * self._num_sensors
+        clique_reward = [0] * self._num_sensors
 
         # Check termination condition
         if truncated:

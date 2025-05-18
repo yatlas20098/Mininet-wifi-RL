@@ -14,6 +14,19 @@ import matplotlib.pyplot as plt
 import time
 import math
 import pickle
+
+class Mininet_Simulation_Parameters:
+    def __init__(self, sensor_ids, sampling_freq=3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, local_simulation=True, remote_simulation_ip="", remote_simulation_port=""):
+        self.sensor_ids = sensor_ids
+        self.sampling_freq = sampling_freq
+        self.observation_time = observation_time
+        self.transmission_size = transmission_size
+        self.file_lines_per_chunk = file_lines_per_chunk
+        self.transmission_frame_duration = transmission_frame_duration
+        self.local_simulation = local_simulation
+        self.remote_simulation_ip = remote_simulation_ip
+        self.remote_simulation_port = remote_simulation_port
+
 import networkx as nx
 from networkx.algorithms import approximation as approx
 from pulp import LpProblem, LpMaximize, LpVariable, lpSum, LpBinary, PULP_CBC_CMD
@@ -86,7 +99,7 @@ class sensor_cluster():
             
             # Update throughputs
             self._previous_throughputs[sensor_id] = self._throughputs[sensor_id]
-            self._throughputs[sensor_id] = bytes_received // self._transmission_size # Measured by number of succesful transmissions
+            self._throughputs[sensor_id] = bytes_received // self._parameters.transmission_size # Measured by number of succesful transmissions
         return np.array(data)
 
     """
@@ -112,8 +125,8 @@ class sensor_cluster():
         # Get the number of chunks the data set can split into
         num_chunks_in_file = file_size // file_lines_per_chunk
 
-        if num_chunks_in_file < self._num_transmission_frames:
-            print(f'The number of chunks to send or the number of file lines per chunk must be decreased. File {dataset_dir} contains enough data for {num_chunks_in_file} but the number of transmission frames is {self._num_transmission_frames}')
+        if num_chunks_in_file < self._parameters.num_transmission_frames:
+            print(f'The number of chunks to send or the number of file lines per chunk must be decreased. File {dataset_dir} contains enough data for {num_chunks_in_file} but the number of transmission frames is {self._parameters.num_transmission_frames}')
             return []
 
         # Split file into chunks
@@ -154,7 +167,7 @@ class sensor_cluster():
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
 
-            data = data*20 # Need more data
+            data = data*20# Need more data
             xs = np.arange(len(data)) / 250 
             interp_func = scipy.interpolate.interp1d(xs, data)
             return interp_func
@@ -216,7 +229,7 @@ class sensor_cluster():
         max_ind_set: the maximum indepdent set of highest throughput in the redudancy graph. 
     """
     def _calculate_rewards(self, redudancy_graph, sensor_effective_throughputs):
-        bounded_log = lambda x: np.log2(min(1, max(0.1, x))) 
+        bounded_log = lambda x: np.log2(min(1, max(0.2, x))) 
         
         # Get similarity reward
         max_throughput = max(self._throughputs)
@@ -228,7 +241,7 @@ class sensor_cluster():
 
         max_ind_set = approx.maximum_independent_set(redudancy_graph) 
         maxF = np.max(self._transmission_frequencies)
-        total_throughput_bound = (len(max_ind_set) + 1) * maxF 
+        total_throughput_bound = (len(max_ind_set)) * maxF 
         throughput_reward = [bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
 
         #min_throughput = np.min([self._throughputs[i] for i in max_ind_set])
@@ -249,10 +262,7 @@ class sensor_cluster():
         sensor_effective_throughputs: a list of the effective throughputs for each sensor (i.e. fixing a sensor s, the maximium throughput of a sensor - possibily s itself - transmitting similar data to s)
     """
 
-    def _compute_similarity_and_redudancy_graph(self, temperature_data):
-        # Initalize similarity matrix
-        similarity = np.zeros((self._num_sensors, self._num_sensors))
-
+    def _compute_similarity_and_redudancy_graph(self, temperature_data, replay=-1):
         # Get list of sensors that had at least one succesfull transmission 
         awake_sensors = list(temperature_data.keys())
         sensor_effective_throughputs = self._throughputs.copy()
@@ -261,11 +271,20 @@ class sensor_cluster():
         redudancy_graph = nx.Graph()
         redudancy_graph.add_nodes_from([(i, {"throughput": self._throughputs[i]}) for i in range(self._num_sensors)])
 
+        if replay > -1:
+            similarity = self.similarity_log[replay]
+       
+        else:
+            # Initalize similarity matrix
+            similarity = np.zeros((self._num_sensors, self._num_sensors))
+
+            for i in range(len(awake_sensors)):
+                for j in range(i + 1, len(awake_sensors)):
+                    # TODO: Currently only using first data point for similiarity 
+                    similarity[awake_sensors[i], awake_sensors[j]] = int(temperature_data[awake_sensors[i]][0] - temperature_data[awake_sensors[j]][0] <= self._parameters.similarity_threshold)
+
         for i in range(len(awake_sensors)):
             for j in range(i + 1, len(awake_sensors)):
-                # TODO: Currently only using first data point for similiarity 
-                similarity[awake_sensors[i], awake_sensors[j]] = int(temperature_data[awake_sensors[i]][0] - temperature_data[awake_sensors[j]][0] <= self._similarity_threshold)
-
                 # Add edge from vertex i to vertex j if sensors i and j are similar
                 if similarity[awake_sensors[i],awake_sensors[j]] == 1:
                     redudancy_graph.add_edge(awake_sensors[i],awake_sensors[j])
@@ -288,7 +307,7 @@ class sensor_cluster():
 
         for i in range(self._num_sensors):
             # Name of file where transmisions received by the cluster head from sensor i is stored
-            file_name = f'sensor_{self._sensor_ids[i]}.txt'
+            file_name = f'sensor_{self._parameters.sensor_ids[i]}.txt'
 
             # Create a copy of the original file
             subprocess.run(["cp", f'{self._log_directory}/ch_received_data/{file_name}', f'{self._log_directory}/ch_received_data/.{file_name}'])
@@ -309,6 +328,11 @@ class sensor_cluster():
 
     """
     Get an observation of the enviornment.
+    
+    Args:
+        rates (int list): Transmission Frequency index to be used for each sensor
+        heuristic (bool): If heursitic is True, rates are discared and a heursitic policy is used to assign transmission rates
+        replay (int): If replay is greater than -1, the similarity matrix is retrived from step replay to calculate rewards  
 
     Returns:
         tuple: (rates_id, similarity, energy, throughputs, reward)
@@ -317,31 +341,41 @@ class sensor_cluster():
             throughputs - vector of average throughput for each sensor
             reward - reward according to reward function
     """
-    def get_observation(self, rates):
+    def get_observation(self, rates, heuristic=False, replay=-1):
         # Clear transmissions
         for i in range(self._num_sensors):
             self.transmission_freq_idxs[i] = rates[i] 
 
             # Name of file where transmisions received by the cluster head from sensor i is stored
-            file_name = f'sensor_{self._sensor_ids[i]}.txt'
+            file_name = f'sensor_{self._parameters.sensor_ids[i]}.txt'
 
             # Clear the file for future transmissions
             # TODO: Lock before clearing?
             with open(f'{self._log_directory}/ch_received_data/{file_name}', 'r+') as file:
                 file.truncate(0)
 
+        if heuristic:
+            # Compute max indepdent set using previous redudancy graph
+            max_ind_set = self._get_max_ind_set(self._redudancy_graph)
+
+            # Set rates to max for sensors belonging to max_ind_set and all other rates to 0
+            rates = [0 for i in range(self._num_sensors)]
+            for sensor in max_ind_set:
+                rates[sensor] = self._parameters.sampling_freq
+            self.set_rates(rates)
+
         observation_start_time = time.time()
         print('Getting observation')
 
-        time.sleep(self._observation_time)
-        true_observation_period_time = (time.time() - observation_start_time) / self._observation_time
+        time.sleep(self._parameters.observation_time)
+        true_observation_period_time = (time.time() - observation_start_time) / self._parameters.observation_time
         self._throughputs = [t / true_observation_period_time for t in self._throughputs]
 
         # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = self._get_temperature_data()
 
         # Get similarity matrix and redudancy graph
-        similarity, redudancy_graph, sensor_effective_throughputs = self._compute_similarity_and_redudancy_graph(temperature_data)
+        similarity, redudancy_graph, sensor_effective_throughputs = self._compute_similarity_and_redudancy_graph(temperature_data, replay)
         total_throughput = np.sum(self._throughputs)
 
         #print(f'Awake sensors: {awake_sensors}')
@@ -350,6 +384,7 @@ class sensor_cluster():
         #print(f'Throughputs (# of sucessfull transmissions) : {self._throughputs}')
         print(f'Total throughput over observation: {total_throughput} succesfull transmissions')
 
+        self.similarity_log.append(similarity)
         if total_throughput == 0:
             return (similarity, self._throughputs, [0]*self._num_sensors, [0]*self._num_sensors, rates)
 
@@ -369,7 +404,7 @@ class sensor_cluster():
         
         # Pickle logs for plotting 
         with open('figure_data.pkl', 'wb') as file:
-            pickle.dump((self._sensor_ids, self._transmission_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.similarity_reward_log, self.throughput_reward_log, self.max_ind_set_log, self.chunks_sent_log), file)
+            pickle.dump((self._parameters.sensor_ids, self._transmission_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.similarity_reward_log, self.throughput_reward_log, self.max_ind_set_log, self.chunks_sent_log), file)
 
         return (similarity, self._throughputs, throughput_reward, similarity_reward, rates)
 
@@ -432,16 +467,10 @@ class sensor_cluster():
         self._net.build()
         self._net.start()
    
-    def __init__(self, sensor_ids, transmission_size=2*1024, transmission_frame_duration=1, num_transmission_frames=10000, observation_time=10, file_lines_per_chunk=10, log_directory='data/log', dataset_directory='data/towerdataset'):
-        # Simulation parameters 
-        self._sensor_ids = sensor_ids  
-        self._transmission_size = transmission_size # In bytes
-        self._transmission_frame_duration = transmission_frame_duration # Duration of a transmission frame in seconds 
-        self._similarity_threshold = 1 # Threshold (in degrees) for two sensors to be considered similar 
-        self._num_transmission_frames = num_transmission_frames # Total number of transmission frames 
-        self._observation_time = observation_time # The number of seconds between each observation
-
-        self._num_sensors = len(sensor_ids)
+    def __init__(self, simulation_parameters, log_directory='data/log', dataset_directory='data/towerdataset'):
+        self._parameters = simulation_parameters
+        
+        self._num_sensors = len(self._parameters.sensor_ids)
         self._throughputs = [0 for i in range(self._num_sensors)]
         self._previous_throughputs = [0 for i in range(self._num_sensors)]
         self._total_throughput = 0
@@ -454,11 +483,11 @@ class sensor_cluster():
        
         # Rate configuration
         self.transmission_freq_idxs = multiprocessing.Array('i', [1] * self._num_sensors)
-        self._transmission_frequencies = np.array([10, 20, 30, 40]) # Possible number of times a sensor can transmit per frame
+        self._transmission_frequencies = np.array([20, 40, 60, 80]) # Possible number of times a sensor can transmit per frame
 
         # Energy configuration
         self._full_energy = 100
-        self._recharge_time = 10 * transmission_frame_duration
+        self._recharge_time = 10 * self._parameters.transmission_frame_duration
         self._recharge_threshold = 20
         self._energy = [self._full_energy for _ in range(self._num_sensors)]
 
@@ -468,6 +497,7 @@ class sensor_cluster():
         self.throughput_log = [[] for _ in range(self._num_sensors)]
         self.reward_log = []
         self.similarity_reward_log = []
+        self.similarity_log = []
         self.throughput_reward_log = []
         self.max_ind_set_log = []
         self.chunks_sent_log = []
@@ -521,7 +551,7 @@ class sensor_cluster():
             return
         
         # Create a file to store the packets received by the cluster head
-        sensor.cmd(f'touch {self._log_directory}/ch_received_data/sensor_{self._sensor_ids[sensor_idx]}.txt')
+        sensor.cmd(f'touch {self._log_directory}/ch_received_data/sensor_{self._parameters.sensor_ids[sensor_idx]}.txt')
        
         chunks_sent = 0
 
@@ -535,7 +565,7 @@ class sensor_cluster():
 
         # Log the initial transmission rate
         self.rate_log[sensor_idx].append(self.transmission_freq_idxs[sensor_idx])
-        filler = 'G' * (self._transmission_size)
+        filler = 'G' * (self._parameters.transmission_size)
 
         while chunks_sent < 10000:
             # Recharge sensor if energy is below the recharge threshold
@@ -564,7 +594,7 @@ class sensor_cluster():
             if transmit_rate == 0:
                 #next_chunk_idx += int(max(self._transmission_frequencies))
 
-                time.sleep(self._transmission_frame_duration)
+                time.sleep(self._parameters.transmission_frame_duration)
                 continue
 
             # Store the current time
@@ -594,7 +624,7 @@ class sensor_cluster():
 
             #next_chunk_idx += (max(self._transmission_frequencies) / transmit_rate) - 1
 
-            sleep_time = self._transmission_frame_duration / transmit_rate
+            sleep_time = self._parameters.transmission_frame_duration / transmit_rate
             time.sleep(sleep_time)
 
         info(f"Sensor {sensor_idx}: Finished sending messages\n")
@@ -611,7 +641,7 @@ class sensor_cluster():
 
         for i in range(self._num_sensors):
             # Create a file to store data received from sensor i
-            output_file = f'{base_output_file}_{self._sensor_ids[i]}.txt'
+            output_file = f'{base_output_file}_{self._parameters.sensor_ids[i]}.txt'
             node.cmd(f'touch {output_file}')
 
             # Create a listener for sensor i 
@@ -677,7 +707,7 @@ class sensor_cluster():
             # Pickle simulation results
             #print(f'Simulation complete; saving data\n')
             #with open('figure_data.pkl', 'wb') as file:
-            #    pickle.dump((self._sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_reward_log, self.throughput_reward_log, self.clique_log, self.chunks_sent), file)
+            #    pickle.dump((self._parameters.sensor_ids, self._rate_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.clique_reward_log, self.throughput_reward_log, self.clique_log, self.chunks_sent), file)
             #print(f'Pickle dump succesfuly made\n')
 
             self._stop_receivers(cluster_head)
@@ -776,8 +806,9 @@ if __name__== '__main__':
     transmission_frame_duration = 1
     file_lines_per_chunk = 1
     num_transmission_frames = 3000
+    parameters = Mininet_Simulation_Parameters(sensor_ids=sensor_ids, observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, num_transmission_frames=num_transmission_frames)
 
-    cluster = sensor_cluster(sensor_ids, log_directory=f'data/log', observation_time=observation_time, transmission_size=transmission_size, transmission_frame_duration=transmission_frame_duration, file_lines_per_chunk=file_lines_per_chunk, num_transmission_frames=num_transmission_frames)
+    cluster = sensor_cluster(parameters, log_directory=f'data/log')
     cluster.establish_connection_with_rl_agent()
     cluster_thread = threading.Thread(target=cluster.start, args=())
     cluster_thread.start()
