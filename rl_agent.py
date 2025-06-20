@@ -10,6 +10,7 @@ import struct
 import time
 import threading
 import pickle
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -17,8 +18,11 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.init as init
+from torch.distributions.categorical import Categorical 
+
+from memory import ReplayMemory, Transition, PPOMemory
 from WSN_env import WSNEnvironment, Mininet_Simulation_Parameters
-from models import DDQN 
+from models import DDQN, CriticNetwork, ActorNetwork 
 
 is_ipython = 'inline' in matplotlib.get_backend()
 if is_ipython:
@@ -32,24 +36,8 @@ device = torch.device(
         "cpu"
         )
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'throughput_reward', 'similarity_reward'))
-
-class ReplayMemory(object):
-    def __init__(self, capacity):
-        self.memory = deque([], maxlen = capacity)
-
-    def push(self, *args):
-        """Save a transition"""
-        self.memory.append(Transition(*args))
-
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
 class Training_Parameters:
-    def __init__(self, BATCH_SIZE=64, memory_capacity=256, GAMMA=0.7, EPS_START=1, EPS_END=0.0, EPS_DECAY=400, TAU=0.01, LR=0.25e-3, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=512):
+    def __init__(self, BATCH_SIZE=64, memory_capacity=256, GAMMA=0.99, EPS_START=1, EPS_END=0.0, EPS_DECAY=400, TAU=0.01, LR=0.0003, gae_lambda=0.95, policy_clip = 0.1, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=2048, n_epochs=10):
         self.BATCH_SIZE = BATCH_SIZE
         self.memory_capacity = memory_capacity
         self.GAMMA = GAMMA
@@ -58,9 +46,12 @@ class Training_Parameters:
         self.EPS_DECAY = EPS_DECAY
         self.TAU = TAU
         self.LR = LR
+        self.gae_lambda = gae_lambda
+        self.policy_clip = policy_clip
         self.max_steps = max_steps
         self.num_episodes = num_episodes
         self.train_every = train_every
+        self.n_epochs = n_epochs
 
 class WSN_agent:
     def __init__(self, mininet_simulation_parameters, training_parameters):
@@ -68,8 +59,10 @@ class WSN_agent:
         self._env = WSNEnvironment(mininet_simulation_parameters, max_steps, device) 
         self._num_sensors = len(mininet_simulation_parameters.sensor_ids)
         self._sampling_freq = mininet_simulation_parameters.sampling_freq
+        self._transmission_rates = [20, 40, 60, 80]
 
         self._n_observations = self._num_sensors*self._num_sensors + 2*self._num_sensors
+        #self._n_observations = [self._num_sensors, self._num_sensors + 2]
 
         # Seperate policy network for both reward types
         self._reward_types = ['throughput', 'similarity']
@@ -77,16 +70,20 @@ class WSN_agent:
         self._target_net = {}
         self._optimizer = {}
         self._loss = {}
-
+        
         # Iniatlize Nerual Networks
-        for reward_type in self._reward_types:
-            self._policy_net[reward_type] = [DDQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
-            self._target_net[reward_type] = [DDQN(sampling_freq, self._n_observations, self._num_sensors, device).to(device) for _ in range(self._num_sensors)]
-            
-            self._optimizer[reward_type] = [optim.AdamW(self._policy_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
-            self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
+        self._critic_net = {}
+        for agent in range(self._num_sensors):
+            for reward_type in self._reward_types:
+                self._critic_net[reward_type] = [CriticNetwork(self._n_observations, 1, LR, device).to(device) for _ in range(self._num_sensors)]
+                self._optimizer[reward_type] = [optim.AdamW(self._critic_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
+                self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
+
+        self._actor_net = [ActorNetwork(sampling_freq, self._n_observations, LR, device).to(device) for agent in range(self._num_sensors)]
+        self._optimizer["actor"] = [optim.AdamW(self._actor_net[agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
+
         # Replay memory for trainning
-        self._memory = [ReplayMemory(self._training_params.memory_capacity) for _ in range(self._num_sensors)]
+        self._memory = [PPOMemory(batch_size=self._training_params.BATCH_SIZE) for _ in range(self._num_sensors)]
 
         self._steps_done = 0
         self._episode_durations = []
@@ -96,96 +93,103 @@ class WSN_agent:
         self._state, self._info = self._env.reset()
 
     def _optimize_model(self):
-        if len(self._memory[0]) < self._training_params.BATCH_SIZE:
-            return
-        
-        total_loss = {r:0 for r in self._reward_types} 
+        #if len(self._memory[0]) < self._training_params.BATCH_SIZE:
+        #    return
+         
+        total_loss_log = {r:0 for r in self._reward_types}
+        total_loss = 0
+
         for agent in range(self._num_sensors):
-            # Sample a batch of transitions 
-            transitions, weights, tree_idxs = self._memory[agent].sample(self._training_params.BATCH_SIZE)
-            batch = Transition(*zip(*transitions))
+            for _ in range(self._training_params.n_epochs):
+                # Sample a batch of transitions 
+                transitions, batches = self._memory[agent].generate_batches()
+                transitions = Transition(*zip(*transitions))
 
-            # Get the non-final states in the batch
-            non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
-            non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
-            non_final_next_states = non_final_next_states.view(-1, 12*self._num_sensors)
+                #non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
+                #non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
+                #non_final_next_states = non_final_next_states.view(-1, 12*self._num_sensors)
 
-            state_batch = torch.stack(batch.state)[non_final_mask]
-            action_batch = torch.stack(batch.action)[non_final_mask][:, agent]
+                states = torch.stack(transitions.state).view(-1, 12*self._num_sensors)
+                actions = torch.stack(transitions.action)
 
-            throughput_reward = torch.stack(batch.throughput_reward)[non_final_mask]
-            similarity_reward = torch.stack(batch.similarity_reward)[non_final_mask]
-                        
-            for reward_type in self._reward_types:
-                state_action_values = self._policy_net[reward_type][agent](state_batch).gather(1, action_batch.long().unsqueeze(1)).squeeze()
-                max_values = self._target_net[reward_type][agent](non_final_next_states)
-                next_state_values = torch.zeros(self._training_params.BATCH_SIZE, device=device)
-                with torch.no_grad():
-                    max_values = self._target_net[reward_type][agent](non_final_next_states).max(1)[0]
-                    next_state_values[non_final_mask] = max_values
-
-                if reward_type == 'throughput':
-                    reward = throughput_reward[:, agent]
-                else:
-                    reward = similarity_reward[:, agent]
-
-                predicted_q_values = (next_state_values * self._GAMMA).squeeze() + reward
+                throughput_reward = torch.stack(transitions.throughput_reward)
+                similarity_reward = torch.stack(transitions.similarity_reward)
+                reward_len = len(throughput_reward)
                 
-                if reward_type == 'throughput':
-                    td_error = (state_action_values - predicted_q_values).abs().detach().cpu()
-                    self._memory[agent].update_priorities(tree_idxs, td_error.numpy()) 
+                values = torch.stack(transitions.value)
+                #print(values)
+                # values = torch.tensor(values).to(self._actor.device)
+                n_states = states.shape[0]
+                            
+                for reward_type in self._reward_types:
+                    if reward_type == 'throughput':
+                        reward = throughput_reward
+                    else:
+                        reward = similarity_reward
+                    
+                    advantage = np.zeros(len(reward), dtype=np.float32)
+                    for t in range(reward_len - 1):
+                        discount = 1
+                        a_t = 0.0
+                        for k in range(t, reward_len - 1):
+                            #a_t += discount*(reward[k] + self._training_params.GAMMA*values[k+1]*(1-int(dones_arr[k])) - values[k])
 
-                # Calculate Loss 
-                criterion = nn.SmoothL1Loss()
-                loss = criterion(state_action_values, predicted_q_values)
+                            a_t += discount*(reward[k] + self._training_params.GAMMA*values[k+1]*(1) - values[k])
+                            discount *= self._training_params.GAMMA* self._training_params.gae_lambda
+                        advantage[t] = a_t
+                    advantage = torch.tensor(advantage).to(self._actor_net[agent].device)
 
-                # Log loss
-                self._loss[reward_type][agent].append(loss.item())
-                total_loss[reward_type] += loss.item()
+                    for batch in batches:
+                        #states = torch.tensor(states_arr[batch], dtype=torch.float).to(self._actor.device)
+                        old_probs = torch.tensor(transitions.probs)[batch].to(self._actor_net[agent].device)
+                        #actions = torch.tensor(actions_arr[batch]).to(self._actor.device)
 
-                # Optimization step
-                self._optimizer[reward_type][agent].zero_grad()
-                loss.backward()
+                        dist = self._actor_net[agent](states[batch])
+                        critic_value = self._critic_net[reward_type][agent](states[batch])
+                        critic_value = torch.squeeze(critic_value)
 
-                # Clip graidents
-                torch.nn.utils.clip_grad_value_(self._policy_net[reward_type][agent].parameters(), 1)
-                self._optimizer[reward_type][agent].step()
+                        new_probs = dist.log_prob(actions[batch])
+                        prob_ratio = new_probs.exp() / old_probs.exp()
 
-        print(f"Average throughput loss: {(total_loss['throughput'] / self._num_sensors):.4f}")
-        print(f"Average similarity loss: {(total_loss['similarity'] / self._num_sensors):.4f}")
-        with open(f'loss.pkl', 'wb') as file:
-            pickle.dump((self._training_params.BATCH_SIZE, self._loss), file)
+                        weighted_probs = advantage[batch] * prob_ratio
+                        weighted_clipped_probs = torch.clamp(prob_ratio, (1-self._training_params.policy_clip)*torch.ones_like(prob_ratio),
+                                1 + self._training_params.policy_clip*advantage[batch])
+                        actor_loss = -torch.min(weighted_probs, weighted_clipped_probs).mean()
+
+                        returns = advantage[batch] + values[batch]
+                        critic_loss = (returns - critic_value)**2
+                        critic_loss = critic_loss.mean()
+
+                        total_loss += actor_loss + 0.5*critic_loss
+                        #total_loss_log[reward_type] += total_loss
+                        self._actor_net[agent].optimizer.zero_grad()
+                        self._critic_net[reward_type][agent].optimizer.zero_grad()
+                        self._actor_net[agent].optimizer.step()
+                        self._critic_net[reward_type][agent].optimizer.step()
+
+            self._memory[agent].clear()
+
+        print(f"Average throughput loss: {(total_loss / self._num_sensors):.4f}")
+        #print(f"Average similarity loss: {(total_loss['similarity'] / self._num_sensors):.4f}")
+        #with open(f'loss.pkl', 'wb') as file:
+        #    pickle.dump((self._training_params.BATCH_SIZE, self._loss), file)
             
     def _select_action(self):
-        eps_threshold = self._training_params.EPS_END + (self._training_params.EPS_START - self._training_params.EPS_END) * math.exp(-1. * self._steps_done / self._training_params.EPS_DECAY)
-        self._steps_done += 1
-        action = None
-
-        samples = torch.rand(self._num_sensors, device=device)
-        exploration_mask = samples <= eps_threshold
-        policy_mask = ~exploration_mask
- 
-        actions = torch.randint(0, self._sampling_freq, (self._num_sensors,), dtype=torch.int, device=device)
-
-        with torch.no_grad():
-            #action_values = [self._policy_net['throughput'][agent](self._state) + self._policy_net['similarity'][agent](self._state) / 2 for agent in range(self._num_sensors)]
-            action_values = [self._policy_net['throughput'][agent](self._state) for agent in range(self._num_sensors)]
-            action_values = torch.stack(action_values)
-            print("Q values for action:")
-            print(action_values)
-            action_probs = F.softmax(action_values, dim=1)
-            policy_actions = torch.argmax(action_probs, dim=1)
-            policy_actions = torch.round(policy_actions).int().squeeze()
-
-        print("Policy mask: ", policy_mask)
-
-        actions[policy_mask] = policy_actions[policy_mask]
-        # action[dead_sensors] = 0 # Dont allow dead sensors to transmit
-        # action[awake_sensors & (action==0)] = 1 # Force awake sensors to transmit
+        action = torch.zeros(self._num_sensors, dtype=torch.int, device=device)
+        value = [torch.zeros(self._num_sensors, dtype=torch.float, device=device) for _ in range(self._num_sensors)]
+        probs = [torch.zeros(self._sampling_freq, dtype=torch.float, device=device) for _ in range(self._num_sensors)]
+        
+        for sensor in range(self._num_sensors):
+            dist = self._actor_net[sensor](self._state)
+            #value[sensor] = self._critic['throughput'][sensor](self._state) + self._critic['similarity'][sensor](self._state)
+            value[sensor] = self._critic_net['similarity'][sensor](self._state)
+            action[sensor] = dist.sample()
+            probs[sensor] = torch.squeeze(dist.log_prob(action[sensor])).item()
+            # action currently has indicies. Switch to rates
+            action[sensor] = self._transmission_rates[action[sensor]]
 
         print(f'action: {action}')
-        
-        return actions
+        return action, probs, value
     
     def train(self):
         train_steps = 0
@@ -200,19 +204,19 @@ class WSN_agent:
                 print(f'\n\nEpisode {i_episode}, Step: {t}')
                 print('Taking next step')
 
-                action = self._select_action()                    
+                action, probs, value = self._select_action()                    
                 
                 # Sample the next frame from the enviornment, and receive a reward
-                observation, throughput_reward, similarity_reward, terminated, truncated, _ = self._env.step(self._steps_done, action)
+                observation, rewards, terminated, truncated, _ = self._env.step(self._steps_done, action)
                 
-                print(f'Throughput reward: {throughput_reward[0]}')
-                print(f'Similarity reward: {similarity_reward}')
+                print(f'Throughput reward: {rewards["throughput"][0]}')
+                print(f'Similarity reward: {rewards["similarity"]}')
                 
-                throughput_reward_log.append(throughput_reward[0])
+                throughput_reward_log.append(rewards["throughput"][0])
                 
                 # Move the reward onto the correct device (memory, cpu, or gpu)
-                throughput_reward = torch.tensor(throughput_reward, device=device, dtype=torch.float32)
-                similarity_reward = torch.tensor(similarity_reward, device=device, dtype=torch.float32)
+                throughput_reward = torch.tensor(rewards["throughput"], device=device, dtype=torch.float32)
+                similarity_reward = torch.tensor(rewards["similarity"], device=device, dtype=torch.float32)
 
                 done = terminated or truncated
 
@@ -220,34 +224,24 @@ class WSN_agent:
                     next_state = None
                 else:
                     next_state = observation.clone().detach()
-
+                
                 for i in range(self._num_sensors):
                     # Store the transition in memory
-                    self._memory[i].push(self._state, action, next_state, throughput_reward, similarity_reward)
+                    # Normalize actions
+                    self._memory[i].push(self._state, action[i]/20 - 1, probs[i], value[i], next_state, throughput_reward[i], similarity_reward[i])
 
                 # Move to the next state
                 self._state = next_state
                 
-                # Perform one step of the optimization (on the policy network)
-                self._optimize_model()
-
+                
                 train_steps += 1                
                 with torch.no_grad():
                     if train_steps >= self._training_params.train_every:
-                        self._train_steps = 0
-                        for agent in range(self._num_sensors):
-                            # Update target networks
-                            for reward_type in self._reward_types:
-                                self._target_net[reward_type][agent].load_state_dict(self._policy_net[reward_type][agent].state_dict())
-                            #if self._train_steps[reward_type] >= self._train_every[reward_type]:
-                            #self._train_steps[reward_type] = 0
-                            # Soft update of the target network's weights
-                            #target_net_state_dict = self._target_net[reward_type][agent].state_dict()
-                            #policy_net_state_dict = self._policy_net[reward_type][agent].state_dict()
-                            #for key in policy_net_state_dict:
-                            #    target_net_state_dict[key] = policy_net_state_dict[key]*self._TAU + target_net_state_dict[key]*(1-self._TAU)
-                            #self._target_net[reward_type][agent].load_state_dict(target_net_state_dict)
+                        train_steps = 0
 
+                        # Perform one step of the optimization (on the policy network)
+                        self._optimize_model()
+                
                 if done:
                     self._episode_durations.append(t + 1)
                     break
@@ -263,7 +257,7 @@ if __name__ == '__main__':
     transmission_size = 2*1500
     observation_time = 1
     local_mininet_simulation = True 
-    server_ip = "10.192.135.56" # IP of mininet simulation; ignored if local_mininet_simulation = True
+    server_ip = "192.168.0.162" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
     mininet_simulation_parameters = Mininet_Simulation_Parameters(sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, local_simulation=local_mininet_simulation, remote_simulation_ip=server_ip, remote_simulation_port=server_port)
 
@@ -276,8 +270,11 @@ if __name__ == '__main__':
     EPS_END = 0
     max_steps = 9999 
     LR = 0.25e-2
+    n_epochs = 10
+    train_every = 128
 
-    training_parameters = Training_Parameters(BATCH_SIZE=BATCH_SIZE, memory_capacity=memory_capacity, max_steps=max_steps, LR=LR, EPS_DECAY=EPS_DECAY, EPS_START=EPS_START, EPS_END=EPS_END, GAMMA=GAMMA)
+
+    training_parameters = Training_Parameters(BATCH_SIZE=BATCH_SIZE, memory_capacity=memory_capacity, max_steps=max_steps, LR=LR, EPS_DECAY=EPS_DECAY, EPS_START=EPS_START, EPS_END=EPS_END, GAMMA=GAMMA, n_epochs=n_epochs, train_every=train_every)
 
     agent = WSN_agent(mininet_simulation_parameters, training_parameters)
     agent.train()

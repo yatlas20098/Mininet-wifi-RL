@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import time
 import math
 import pickle
+import os
 
 class Mininet_Simulation_Parameters:
     def __init__(self, sensor_ids, sampling_freq=3, observation_time=10, transmission_size=4*1024, file_lines_per_chunk=5, transmission_frame_duration=1, local_simulation=True, remote_simulation_ip="", remote_simulation_port=""):
@@ -26,6 +27,7 @@ class Mininet_Simulation_Parameters:
         self.local_simulation = local_simulation
         self.remote_simulation_ip = remote_simulation_ip
         self.remote_simulation_port = remote_simulation_port
+        self.similarity_threshold = 1
 
 import networkx as nx
 from networkx.algorithms import approximation as approx
@@ -54,7 +56,8 @@ class sensor_cluster():
 
     def set_rates(new_rates):
         for i in range(len(new_rates)):
-            self.transmission_freq_idxs[i] = new_rates[i]
+            self._transmission_rates[i] = new_rates[i]
+    
     """
     Establish connection with RL-Agent on HPC 
 
@@ -183,6 +186,7 @@ class sensor_cluster():
     """
 
     def _get_max_ind_set(self, redudancy_graph):
+        # TODO: Switch to polynomial time approximation? 
         LP = LpProblem("Weighted_Max_Independent_Set", LpMaximize)
 
         # binary variabls for each node: 1 if selected, 0 otherwise
@@ -213,8 +217,6 @@ class sensor_cluster():
         # for v in redudancy_graph.nodes:
         #    LP += x[v] + lpSum(x[u] for u in redudancy_graph.neighbors(v)) >= 1
 
-
-   
     """
     Calculate throughput and similarity rewards.
     Note: All sensors receive the same throughput reward. 
@@ -224,11 +226,11 @@ class sensor_cluster():
         sensor_effective_throughputs: a list of the effective throughputs for each sensor
 
     Returns:
-        throughput_reward (list): throughput reward for each sensor
-        similarity_reward (list): similarity reward for each sensor
-        max_ind_set: the maximum indepdent set of highest throughput in the redudancy graph. 
+        reward (dict): dict with keys as reward type and values as a list of rewards
+        max_ind_set: the independent set of highest throughput in the redudancy graph. 
     """
     def _calculate_rewards(self, redudancy_graph, sensor_effective_throughputs):
+        # TODO: Add option to use either cliques or MIS when calculting rewards
         bounded_log = lambda x: np.log2(min(1, max(0.2, x))) 
         
         # Get similarity reward
@@ -240,7 +242,7 @@ class sensor_cluster():
         ind_set_total_throughput = np.sum([redudancy_graph.nodes[v]["throughput"] for v in ind_set_with_max_throughput])
 
         max_ind_set = approx.maximum_independent_set(redudancy_graph) 
-        maxF = np.max(self._transmission_frequencies)
+        maxF = np.max(self._transmission_rates)
         total_throughput_bound = (len(max_ind_set)) * maxF 
         throughput_reward = [bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
 
@@ -248,7 +250,11 @@ class sensor_cluster():
         #throughput_reward = [bounded_log(min_throughput / maxF) for i in range(self._num_sensors)]
 
         print(f'Max Indepdenent Set: {max_ind_set}')
-        return throughput_reward, similarity_reward, max_ind_set
+        reward = {
+                "throughput": throughput_reward,
+                "similarity": similarity_reward
+                }
+        return reward, max_ind_set
 
     """
     Compute the similarity matrix and create a redudancy graph
@@ -271,17 +277,13 @@ class sensor_cluster():
         redudancy_graph = nx.Graph()
         redudancy_graph.add_nodes_from([(i, {"throughput": self._throughputs[i]}) for i in range(self._num_sensors)])
 
-        if replay > -1:
-            similarity = self.similarity_log[replay]
-       
-        else:
-            # Initalize similarity matrix
-            similarity = np.zeros((self._num_sensors, self._num_sensors))
+        # Initalize similarity matrix
+        similarity = np.zeros((self._num_sensors, self._num_sensors))
 
-            for i in range(len(awake_sensors)):
-                for j in range(i + 1, len(awake_sensors)):
-                    # TODO: Currently only using first data point for similiarity 
-                    similarity[awake_sensors[i], awake_sensors[j]] = int(temperature_data[awake_sensors[i]][0] - temperature_data[awake_sensors[j]][0] <= self._parameters.similarity_threshold)
+        for i in range(len(awake_sensors)):
+            for j in range(i + 1, len(awake_sensors)):
+                # TODO: Currently only using first data point for similiarity 
+                similarity[awake_sensors[i], awake_sensors[j]] = int(temperature_data[awake_sensors[i]][0] - temperature_data[awake_sensors[j]][0] <= self._parameters.similarity_threshold)
 
         for i in range(len(awake_sensors)):
             for j in range(i + 1, len(awake_sensors)):
@@ -299,8 +301,6 @@ class sensor_cluster():
     Returns:
         temperature_data (dict): a dict with sensors as keys and values as a list of the temprature data transmitted by a sensor 
     """
-
-
     def _get_temperature_data(self):
         # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = {}
@@ -341,10 +341,13 @@ class sensor_cluster():
             throughputs - vector of average throughput for each sensor
             reward - reward according to reward function
     """
-    def get_observation(self, rates, heuristic=False, replay=-1):
+    def get_observation(self, action, heuristic=False):
+        rates = action[:self._num_sensors]
+        replay = action[-1]
+
         # Clear transmissions
         for i in range(self._num_sensors):
-            self.transmission_freq_idxs[i] = rates[i] 
+            self._transmission_rates[i] = rates[i] 
 
             # Name of file where transmisions received by the cluster head from sensor i is stored
             file_name = f'sensor_{self._parameters.sensor_ids[i]}.txt'
@@ -353,16 +356,6 @@ class sensor_cluster():
             # TODO: Lock before clearing?
             with open(f'{self._log_directory}/ch_received_data/{file_name}', 'r+') as file:
                 file.truncate(0)
-
-        if heuristic:
-            # Compute max indepdent set using previous redudancy graph
-            max_ind_set = self._get_max_ind_set(self._redudancy_graph)
-
-            # Set rates to max for sensors belonging to max_ind_set and all other rates to 0
-            rates = [0 for i in range(self._num_sensors)]
-            for sensor in max_ind_set:
-                rates[sensor] = self._parameters.sampling_freq
-            self.set_rates(rates)
 
         observation_start_time = time.time()
         print('Getting observation')
@@ -383,30 +376,34 @@ class sensor_cluster():
         #print(f'Chunks sent: {list(self._chunks_sent)}')
         #print(f'Throughputs (# of sucessfull transmissions) : {self._throughputs}')
         print(f'Total throughput over observation: {total_throughput} succesfull transmissions')
-
+     
         self.similarity_log.append(similarity)
         if total_throughput == 0:
-            return (similarity, self._throughputs, [0]*self._num_sensors, [0]*self._num_sensors, rates)
+            reward = {
+                    "throughput": [0]*self._num_sensors,
+                    "similarity": [0]*self._num_sensors
+                    }
+            return (similarity, self._throughputs, reward, rates)
 
-        throughput_reward, similarity_reward, max_ind_set = self._calculate_rewards(redudancy_graph, sensor_effective_throughputs) 
+        rewards, max_ind_set = self._calculate_rewards(redudancy_graph, sensor_effective_throughputs) 
 
         # Log sensor data and rewards 
         self.chunks_sent_log.append(list(self._chunks_sent))
         for i in range(self._num_sensors):
             self.throughput_log[i].append(self._throughputs[i])
             self.energy_log[i].append(self._energy[i])
-            self.rate_log[i].append(self.transmission_freq_idxs[i])
+            self.rate_log[i].append(self._transmission_rates[i])
             self._chunks_sent[i] = 0
 
         self.max_ind_set_log.append(max_ind_set)
-        self.similarity_reward_log.append(similarity_reward)
-        self.throughput_reward_log.append(throughput_reward)
+        self.reward_log["similarity"].append(rewards["similarity"])
+        self.reward_log["throughput"].append(rewards["throughput"])
         
         # Pickle logs for plotting 
         with open('figure_data.pkl', 'wb') as file:
-            pickle.dump((self._parameters.sensor_ids, self._transmission_frequencies, self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.similarity_reward_log, self.throughput_reward_log, self.max_ind_set_log, self.chunks_sent_log), file)
+            pickle.dump((self._parameters.sensor_ids, list(self._transmission_rates), self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.similarity_reward_log, self.throughput_reward_log, self.max_ind_set_log, self.chunks_sent_log), file)
 
-        return (similarity, self._throughputs, throughput_reward, similarity_reward, rates)
+        return (similarity, self._throughputs, rewards, rates)
 
     def _send_observation_to_rl_agent(self, rates):
         obs = pickle.dumps(self.get_observation(rates))
@@ -432,7 +429,7 @@ class sensor_cluster():
 
             rates = unpacked_data
             for sensor_idx in range(self._num_sensors):
-                self.transmission_freq_idxs[sensor_idx] = rates[sensor_idx]
+                self._transmission_rates[sensor_idx] = rates[sensor_idx]
 
             self._send_observation_to_rl_agent(rates)
    
@@ -482,8 +479,8 @@ class sensor_cluster():
         self._dataset_directory = dataset_directory
        
         # Rate configuration
-        self.transmission_freq_idxs = multiprocessing.Array('i', [1] * self._num_sensors)
-        self._transmission_frequencies = np.array([20, 40, 60, 80]) # Possible number of times a sensor can transmit per frame
+        self._transmission_rates = multiprocessing.Array('i', [0] * self._num_sensors)
+        #self._transmission_frequencies = np.array([20, 40, 60, 80]) # Possible number of times a sensor can transmit per frame
 
         # Energy configuration
         self._full_energy = 100
@@ -495,7 +492,7 @@ class sensor_cluster():
         self.rate_log = [[] for _ in range(self._num_sensors)]
         self.energy_log = [[] for _ in range(self._num_sensors)]
         self.throughput_log = [[] for _ in range(self._num_sensors)]
-        self.reward_log = []
+        self.reward_log = {"similarity":[], "throughput":[]}
         self.similarity_reward_log = []
         self.similarity_log = []
         self.throughput_reward_log = []
@@ -542,32 +539,36 @@ class sensor_cluster():
         sensor_idx (int): index of sensor
     """
     def _send_messages_to_cluster_head(self, sensor, ch_ip, sensor_idx):
-        # Get the interpolated data corresponding to this sensor
+        # Get the interpolated temperature data corresponding to this sensor
         sensor_data = self._datasets[sensor_idx] 
-        #info(f"Number of Chunks: {len(chunks)}\n")
-
+        
+        # Check if sensor data is valid
         if not sensor_data:
             info(f"Sensor {sensor_idx}: No data available. Skipping send_messages.\n")
             return
         
-        # Create a file to store the packets received by the cluster head
+        # Create a file to store the packets from this sensor received by the cluster head
         sensor.cmd(f'touch {self._log_directory}/ch_received_data/sensor_{self._parameters.sensor_ids[sensor_idx]}.txt')
-       
-        chunks_sent = 0
+        
+        # Track the number of packets sent
+        packets_sent = 0
 
-        # Port to communicate with the cluser head on 
+        # Port to use when communicating with the cluser head 
         port = 5001 + sensor_idx 
         
+        # TODO: Energy is currenty ignored
         # Initalize the sensors energy and the recharge count 
         energy = self._full_energy
         self._energy[sensor_idx] = self._full_energy
         charge_count = 0
 
         # Log the initial transmission rate
-        self.rate_log[sensor_idx].append(self.transmission_freq_idxs[sensor_idx])
+        self.rate_log[sensor_idx].append(self._transmission_rates[sensor_idx])
+
+        # Create filler to pad packets to full size
         filler = 'G' * (self._parameters.transmission_size)
 
-        while chunks_sent < 10000:
+        while packets_sent < 10000:
             # Recharge sensor if energy is below the recharge threshold
             if self._energy[sensor_idx] < self._recharge_threshold:
                 charge_count += 1
@@ -588,7 +589,7 @@ class sensor_cluster():
                 #    break
 
             # Get the sensors current transmission rate
-            transmit_rate = self._transmission_frequencies[self.transmission_freq_idxs[sensor_idx]] 
+            transmit_rate = self._transmission_rates[sensor_idx]
             
             # Sensor should skip tranmission during the current frame
             if transmit_rate == 0:
@@ -602,30 +603,20 @@ class sensor_cluster():
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(transmission_start_time))
             ms = int((transmission_start_time - time.time()) * 1000)
 
-            # Get the chunk to send
-            #info(f"next chunk idx: {next_chunk_idx}")
-            #chunk = chunks[int(next_chunk_idx)]
+            # Get the loss 
             temp = f'{sensor_data(time.time() - self._simulation_start_time):.4f}' 
          
-            # Send the chunk (with filler to pad the chunk to the correct length)
+            # Send the recorded temperature with filler as padding
             cmd = f'echo "\n{temp}\n{filler[len(temp) + 6:]}\n" | nc -v -w0 -u {ch_ip} {port} >> {self._log_directory}/error/nc{sensor_idx} 2>&1 &'
             sensor.cmd(cmd)
             self._chunks_sent[sensor_idx] += 1
 
-            #transmission_time = time.time() - transmission_start_time
+            transmission_time = time.time() - transmission_start_time
             #info(f'Transmission time: {transmission_time}\n')
 
-            """
-            Chunks correspond with data for units of time i.e. chunk[0] corresponds to time 0, chunk[1] corresponds to time 1, 
-            and so on. max(self._transmission_rates) is the maximum number of transmissions that could occur during a transmission 
-            frame. transmit_rate is the number of tranmissions per frame currently made by the sensor. 
-            (max(self._transmission_rates)  / transmit_rate) - 1 is therefore the number of tranmissions that are skipped per frame.   
-            """
-
-            #next_chunk_idx += (max(self._transmission_frequencies) / transmit_rate) - 1
-
-            sleep_time = self._parameters.transmission_frame_duration / transmit_rate
-            time.sleep(sleep_time)
+            sleep_time = 1 / transmit_rate
+            if(sleep_time - transmission_time > 0):
+                time.sleep(sleep_time - transmission_time)
 
         info(f"Sensor {sensor_idx}: Finished sending messages\n")
 

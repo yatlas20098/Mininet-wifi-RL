@@ -29,41 +29,79 @@ from server import Mininet_Remote_Session
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
     
-    def __init__(self, mininet_simulation_parameters, max_steps, device):
-        super(WSNEnvironment, self).__init__()
-
-        # Environment parameters
-        self._num_sensors = len(mininet_simulation_parameters.sensor_ids) 
+    def __establish_virtual_WSN_cluster(self, mininet_simulation_parameters):
         if mininet_simulation_parameters.local_simulation:
+            # Create a local virtual cluster
             self._cluster = sensor_cluster(mininet_simulation_parameters)
-            print("Starting cluster\n")
+            
+            # Start the cluster thread
+            print("Local simulation requested. Starting cluster simulation.\n")
             cluster_process = multiprocessing.Process(target=self._cluster.start, args=())
             cluster_process.start()
             
-            # Give cluster thread time to start
+            # Give the cluster thread time to start up
             time.sleep(10)
-
         else:
-            self._cluster = mininet_server(self._num_sensors, server_ip, server_port)
+            # Connect to a remote virtual cluster
+            print("Remote simulation requested. Attempting connect to remote virtual vluster\n")
+            self._cluster = Mininet_Remote_Session(self._num_sensors, server_ip, server_port)
+
+            # Give the cluster time to start up
             time.sleep(10)
 
+
+    def __init__(self, mininet_simulation_parameters, max_steps, device):
+        super(WSNEnvironment, self).__init__()
+        
+        
+        # Environment parameters
+        self._num_sensors = len(mininet_simulation_parameters.sensor_ids)
         self._device = device
         self._max_steps = max_steps
+        
+        self.__establish_virtual_WSN_cluster(mininet_simulation_parameters)
 
-        self.step_log = []
+        ######################### Observation Space #########################
+        # The observation space at time t is an (n+2) x n matrix. The ith row
+        # in the matrix consists of the recorded temperature (temp_i), 
+        # throughput (th_i), transmission rate (tr_i), and n similarity 
+        # values (sim_{i,j}) for sensor i. 
+        #
+        # Temperature:
+        #   Unit: Celsuius
+        #   Range: -10 to 25
+        # Throughput:
+        #   Unit: Packets / Second
+        #   Range: 0 to +inf
+        # Transmission Rate:
+        #   Unit: Packets / Second
+        #   Range: 0 to +inf
+        # Similarity:
+        #   Range: 0 or 1 (binary)
+        #
+        # Note that similarity is computed using the isSimlar function.
+        #
+        #                       Observation Space Matrix
+        # |temp_1| |th_i| |tr_1| |sim_{1,1}| |sim_{1,2}| ... |sim_{1,n}|
+        # |temp_2| |th_2| |tr_2} |sim_{2,1}| |sim_{2,2}| ... |sim_{2,n}|
+        #                                ... 
+        # |temp_n| |th_n| |tr_n| |sim_{n,1}| |sim_{n,2}| ... |sim_{n,n}|
+        #####################################################################
+        self.observation_space = spaces.Box(low=-100, high=1000, shape=(self._num_sensors, self._num_sensors + 3,), dtype=np.float32)
 
-        print("Done waiting for cluster to start")
-
-        # Define observation space
-        # self.num_sensor*self.num_sensor similarity features, self.num_sensors previous throughput features, and self.num_sensors previous transmission rate features 
-        #self.observation_space = spaces.Box(low=0, high=1, shape=(self.num_sensors*self.num_sensors + 2*self.num_sensors,), dtype=np.float32)
-        # Each sensor has num_sensor similarity features, a feature for its previous throughput, and a feature for its previous transmission rate
-        #self.observation_space = spaces.Box(low=0, high=1000, shape=(self.num_sensors, self.num_sensors + 2,), dtype=np.float32)
-
-        #self.sampling_freq = sampling_freq
-
-        ## Define the action_space
-        #self.action_space = spaces.MultiDiscrete([self.sampling_freq] * self.num_sensors)
+        ########################### Action Space ###########################
+        # The action space at time t is an n+1 vector. The first n entries
+        # correspond to transmisison rates (tr) for sensors. And the n+1th 
+        # entry is t' if the enviornment at time t' should be replayed
+        # and -1 otherwise. 
+        #
+        # Transmission Rate:
+        #   Unit: Packets / Second
+        #   Range: 0 to 250
+        #
+        # |tr_1| |tr_2| ... |tr_n| |replay|
+        ####################################################################
+        self.action_space = spaces.MultiDiscrete(np.array([250] * (self._num_sensors + 1)))
 
         # Internal state variables
         self.step_count = 0
@@ -80,15 +118,11 @@ class WSNEnvironment(gym.Env):
         self.similarity_penalty = 0
 
     def reset(self, seed=0):
-        # Initialize the environment at the start of each episode
+        # Reset step count
         self.step_count = 0
-        self.generated_events = 0
-        self.info = {'captured': 0, 'non-captured': 0}
 
-        for i in range(self._num_sensors):
-            self.info['sensor ' + str(i)] = set()
-
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation([2]*self._num_sensors)
+        # Set sensor transmission rates to 0 and observe the inital state 
+        similarity, throughputs, _, rates = self._cluster.get_observation([0]*self._num_sensors)
 
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
@@ -102,20 +136,21 @@ class WSNEnvironment(gym.Env):
         # Execute one step in the environment
         truncated = bool(self.step_count > self._max_steps)
         terminated = False
-        throughput_reward = [0] * self._num_sensors
-        clique_reward = [0] * self._num_sensors
-
+        rewards = {
+                "throughput": [0] * self._num_sensors,
+                "similarity": [0] * self._num_sensors
+                }
+        
         # Check termination condition
         if truncated:
+            print("Episode terminated")
             terminated = True
-            return self._state, throughput_reward, clique_reward, terminated, truncated, self.info
+            return self._state, rewards, terminated, truncated, self.info
 
-        print('Returning reward')
         self.step_count += 1
-        
-        similarity, throughputs, throughput_reward, clique_reward, rates = self._cluster.get_observation(action.cpu().detach().numpy())
+        similarity, throughputs, rewards , rates = self._cluster.get_observation(action.cpu().detach().numpy())
         self._state = np.column_stack((similarity, rates, throughputs))
         self._state = torch.tensor(self._state, dtype=torch.float32, device=self._device).squeeze()
         self._state = torch.flatten(self._state)
 
-        return self._state, throughput_reward, clique_reward, terminated, truncated, self.info
+        return self._state, rewards, terminated, truncated, self.info

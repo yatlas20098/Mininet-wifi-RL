@@ -18,6 +18,10 @@ import torch.nn.functional as F
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.init as init
 
+from torch.distributions.categorical import Categorical 
+
+import os
+
 from WSN_env import WSNEnvironment
 
 class DDQN(nn.Module):
@@ -88,61 +92,65 @@ class DQN(nn.Module):
         return self._layers(x).to(self._device)
 
 # (s) -> a
-class Actor(nn.Module):
-    def __init__(self, sampling_freq, n_observations, n_actions, num_sensors, device, min_freq, max_freq):
-        super(Actor, self).__init__()
-        self._min_freq = min_freq
-        self._max_freq = max_freq
-        self._device = device
-        w = 128 # number of nodes in a hidden layer
-        num_hidden_layers = 16 
+class ActorNetwork(nn.Module):
+    def __init__(self, n_actions, input_dims, lr, device, chkpt_dir=".\actor.chkpt", fc1_dims=256, fc2_dims=256):
+        super(ActorNetwork, self).__init__()
+        self.device = device
  
-        layers = [nn.Linear(n_observations, w), nn.ReLU()]
-        for _ in range(num_hidden_layers):
-            layers.append(nn.Linear(w,w))
-            layers.append(nn.ReLU())
-        layers.append(nn.Linear(w, 1))
-        #layers.append(nn.ReLU())
+        self._checkpoint_file = os.path.join(chkpt_dir, 'actor_torch_ppo')
+        self._layers = nn.Sequential(
+            nn.Linear(input_dims, fc1_dims), 
+            nn.ReLU(),
+            nn.Linear(fc1_dims, fc2_dims),
+            nn.ReLU(),
+            nn.Linear(fc2_dims, n_actions),
+            nn.Softmax(dim=-1)
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
+        self.to(device)
  
-        self.layers = nn.Sequential(*layers)
- 
-        # Initalize random weights
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                init.constant_(m.bias, 0)
-                                                                                
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
-    def forward(self, x):
-        action = self.layers(x).to(self._device)
-        action = torch.tanh(action)
-        action = (action + 1) / 2 * (self._max_freq - self._min_freq) + self._min_freq
-        return action
- 
+    def forward(self, state):
+        dist = self._layers(state)
+        dist = Categorical(dist) # switch to categorical distrbuition
+        return dist
+
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self._checkpoint_file)
+
+    def load_checkpoint(self):
+        self.load_state_dict(torch.load(self._checkpoint_file))
 
 # (s, a) -> Q
-class Critic(nn.Module):
-    def __init__(self, sampling_freq, n_observations, n_actions, num_sensors, device):
-        super(Critic, self).__init__()
-        self._device = device
-        w = 128 # number of nodes in a hidden layer
-        num_hidden_layers = 16
- 
-        layers = [nn.Linear(n_observations + 1, w), nn.ReLU()]
-        for _ in range(num_hidden_layers):
-            layers.append(nn.Linear(w,w))
-            layers.append(nn.ReLU())
-        layers.append(nn.Linear(w, 1))
- 
-        self.layers = nn.Sequential(*layers)
-        # Initalize random weights
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                init.constant_(m.bias, 0)
-                                                                                
+class CriticNetwork(nn.Module):
+    def __init__(self, input_dims, output_dims, lr, device, chkpt_dir=".\critic.chkpt", fc1_dims=256, fc2_dims=256):
+        super(CriticNetwork, self).__init__()
+        self.device = device
+
+        self._checkpoint_file = os.path.join(chkpt_dir, 'critic_torch_ppo')
+        self._layers = nn.Sequential(
+            nn.Linear(input_dims, fc1_dims), 
+            nn.ReLU(),
+            nn.Linear(fc1_dims, fc2_dims),
+            nn.ReLU(),
+            nn.Linear(fc2_dims, output_dims),
+            nn.Softmax(dim=-1)
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
+        self.to(device)
+
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
-    def forward(self, x):
-        return self.layers(x).to(self._device)
+    def forward(self, state):
+        value = self._layers(state)
+        
+        return value
+
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self._checkpoint_file)
+
+    def load_checkpoint(self):
+        self.load_state_dict(torch.load(self._checkpoint_file))
