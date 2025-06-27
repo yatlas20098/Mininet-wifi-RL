@@ -233,13 +233,13 @@ class WSN_agent:
         
 if __name__ == '__main__':
     # RL parametrs
-    batch_size = 64 
+    batch_size = 2 
     memory_capacity = 1024 
     gamma = 0.99
     max_steps = 9999 
     lr = 0.25e-2
     n_epochs = 10
-    train_every = 1024 
+    train_every = 4 
     training_config = Multi_Agent_PPO_Config(batch_size=batch_size, memory_capacity=memory_capacity, max_steps=max_steps, lr=lr, gamma=gamma, n_epochs=n_epochs, train_every=train_every)
     
     # Simulation parmaters
@@ -247,7 +247,7 @@ if __name__ == '__main__':
     sampling_freq = 4
     transmission_size = 2*1500
     observation_time = 1
-    local_mininet_simulation = False 
+    local_mininet_simulation = True 
     server_ip = "192.168.1.114" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
     mininet_simulation_config = Mininet_Simulation_Config(sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, local_simulation=local_mininet_simulation, remote_simulation_ip=server_ip, remote_simulation_port=server_port)

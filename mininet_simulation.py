@@ -16,7 +16,7 @@ import math
 import pickle
 import os
 
-from configs import Mininet_Simulation_Configs
+from configs import Mininet_Simulation_Config
 import networkx as nx
 from networkx.algorithms import approximation as approx
 from pulp import LpProblem, LpMaximize, LpVariable, lpSum, LpBinary, PULP_CBC_CMD
