@@ -17,22 +17,16 @@ import multiprocessing
 import matplotlib.pyplot as plt
 import pickle
 import dill
-
-try:
-    from mininet_simulation import sensor_cluster, Mininet_Simulation_Parameters
-except ImportError:
-    pass
-
-from server import Mininet_Remote_Session 
-
+from configs import Mininet_Simulation_Config
 
 class WSNEnvironment(gym.Env):
     metadata = {"render_modes": ["console"]}
     
-    def __establish_virtual_WSN_cluster(self, mininet_simulation_parameters):
-        if mininet_simulation_parameters.local_simulation:
+    def __establish_virtual_WSN_cluster(self, config):
+        if config.local_simulation:
+            from mininet_simulation import sensor_cluster
             # Create a local virtual cluster
-            self._cluster = sensor_cluster(mininet_simulation_parameters)
+            self._cluster = sensor_cluster(config)
             
             # Start the cluster thread
             print("Local simulation requested. Starting cluster simulation.\n")
@@ -42,24 +36,24 @@ class WSNEnvironment(gym.Env):
             # Give the cluster thread time to start up
             time.sleep(10)
         else:
+            from remote_session_utils import Mininet_Remote_Session 
+
             # Connect to a remote virtual cluster
             print("Remote simulation requested. Attempting connect to remote virtual vluster\n")
-            self._cluster = Mininet_Remote_Session(self._num_sensors, server_ip, server_port)
+            self._cluster = Mininet_Remote_Session(self._num_sensors, config.server_ip, config.port)
 
             # Give the cluster time to start up
             time.sleep(10)
 
-
-    def __init__(self, mininet_simulation_parameters, max_steps, device):
+    def __init__(self, sim_config, max_steps, device):
         super(WSNEnvironment, self).__init__()
         
-        
         # Environment parameters
-        self._num_sensors = len(mininet_simulation_parameters.sensor_ids)
+        self._num_sensors = len(sim_config.sensor_ids)
         self._device = device
         self._max_steps = max_steps
         
-        self.__establish_virtual_WSN_cluster(mininet_simulation_parameters)
+        self.__establish_virtual_WSN_cluster(sim_config)
 
         ######################### Observation Space #########################
         # The observation space at time t is an (n+2) x n matrix. The ith row

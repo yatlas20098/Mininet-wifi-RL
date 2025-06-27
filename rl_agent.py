@@ -20,8 +20,9 @@ import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.init as init
 from torch.distributions.categorical import Categorical 
 
+from WSN_env import WSNEnvironment
 from memory import ReplayMemory, Transition, PPOMemory
-from WSN_env import WSNEnvironment, Mininet_Simulation_Parameters
+from configs import Mininet_Simulation_Config, Multi_Agent_PPO_Config
 from models import DDQN, CriticNetwork, ActorNetwork 
 
 is_ipython = 'inline' in matplotlib.get_backend()
@@ -36,26 +37,9 @@ device = torch.device(
         "cpu"
         )
 
-class Training_Parameters:
-    def __init__(self, BATCH_SIZE=64, memory_capacity=256, GAMMA=0.99, EPS_START=1, EPS_END=0.0, EPS_DECAY=400, TAU=0.01, LR=0.0003, gae_lambda=0.95, policy_clip = 0.1, recharge_thresh=0.2, max_steps=100, num_episodes=10, train_every=2048, n_epochs=10):
-        self.BATCH_SIZE = BATCH_SIZE
-        self.memory_capacity = memory_capacity
-        self.GAMMA = GAMMA
-        self.EPS_START = EPS_START
-        self.EPS_END = EPS_END
-        self.EPS_DECAY = EPS_DECAY
-        self.TAU = TAU
-        self.LR = LR
-        self.gae_lambda = gae_lambda
-        self.policy_clip = policy_clip
-        self.max_steps = max_steps
-        self.num_episodes = num_episodes
-        self.train_every = train_every
-        self.n_epochs = n_epochs
-
 class WSN_agent:
-    def __init__(self, mininet_simulation_parameters, training_parameters):
-        self._training_params = training_parameters
+    def __init__(self, mininet_simulation_parameters, config):
+        self._config = config 
         self._env = WSNEnvironment(mininet_simulation_parameters, max_steps, device) 
         self._num_sensors = len(mininet_simulation_parameters.sensor_ids)
         self._sampling_freq = mininet_simulation_parameters.sampling_freq
@@ -68,22 +52,19 @@ class WSN_agent:
         self._reward_types = ['throughput', 'similarity']
         self._policy_net = {}
         self._target_net = {}
-        self._optimizer = {}
         self._loss = {}
         
         # Iniatlize Nerual Networks
         self._critic_net = {}
         for agent in range(self._num_sensors):
             for reward_type in self._reward_types:
-                self._critic_net[reward_type] = [CriticNetwork(self._n_observations, 1, LR, device).to(device) for _ in range(self._num_sensors)]
-                self._optimizer[reward_type] = [optim.AdamW(self._critic_net[reward_type][agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
+                self._critic_net[reward_type] = [CriticNetwork(self._n_observations, 1, config.lr, device).to(device) for _ in range(self._num_sensors)]
                 self._loss[reward_type] = [[] for _ in range(self._num_sensors)]
 
-        self._actor_net = [ActorNetwork(sampling_freq, self._n_observations, LR, device).to(device) for agent in range(self._num_sensors)]
-        self._optimizer["actor"] = [optim.AdamW(self._actor_net[agent].parameters(), lr=LR, amsgrad=True) for agent in range(self._num_sensors)]
+        self._actor_net = [ActorNetwork(sampling_freq, self._n_observations, config.lr, device).to(device) for agent in range(self._num_sensors)]
 
         # Replay memory for trainning
-        self._memory = [PPOMemory(batch_size=self._training_params.BATCH_SIZE) for _ in range(self._num_sensors)]
+        self._memory = [PPOMemory(batch_size=self._config.batch_size) for _ in range(self._num_sensors)]
 
         self._steps_done = 0
         self._episode_durations = []
@@ -100,7 +81,7 @@ class WSN_agent:
         total_loss = 0
 
         for agent in range(self._num_sensors):
-            for _ in range(self._training_params.n_epochs):
+            for _ in range(self._config.n_epochs):
                 # Sample a batch of transitions 
                 transitions, batches = self._memory[agent].generate_batches()
                 transitions = Transition(*zip(*transitions))
@@ -132,10 +113,10 @@ class WSN_agent:
                         discount = 1
                         a_t = 0.0
                         for k in range(t, reward_len - 1):
-                            #a_t += discount*(reward[k] + self._training_params.GAMMA*values[k+1]*(1-int(dones_arr[k])) - values[k])
+                            #a_t += discount*(reward[k] + self._config.GAMMA*values[k+1]*(1-int(dones_arr[k])) - values[k])
 
-                            a_t += discount*(reward[k] + self._training_params.GAMMA*values[k+1]*(1) - values[k])
-                            discount *= self._training_params.GAMMA* self._training_params.gae_lambda
+                            a_t += discount*(reward[k] + self._config.gamma*values[k+1]*(1) - values[k])
+                            discount *= self._config.gamma* self._config.gae_lambda
                         advantage[t] = a_t
                     advantage = torch.tensor(advantage).to(self._actor_net[agent].device)
 
@@ -152,8 +133,8 @@ class WSN_agent:
                         prob_ratio = new_probs.exp() / old_probs.exp()
 
                         weighted_probs = advantage[batch] * prob_ratio
-                        weighted_clipped_probs = torch.clamp(prob_ratio, (1-self._training_params.policy_clip)*torch.ones_like(prob_ratio),
-                                1 + self._training_params.policy_clip*advantage[batch])
+                        weighted_clipped_probs = torch.clamp(prob_ratio, (1-self._config.policy_clip)*torch.ones_like(prob_ratio),
+                                1 + self._config.policy_clip*advantage[batch])
                         actor_loss = -torch.min(weighted_probs, weighted_clipped_probs).mean()
 
                         returns = advantage[batch] + values[batch]
@@ -172,7 +153,7 @@ class WSN_agent:
         print(f"Average throughput loss: {(total_loss / self._num_sensors):.4f}")
         #print(f"Average similarity loss: {(total_loss['similarity'] / self._num_sensors):.4f}")
         #with open(f'loss.pkl', 'wb') as file:
-        #    pickle.dump((self._training_params.BATCH_SIZE, self._loss), file)
+        #    pickle.dump((self._config.BATCH_SIZE, self._loss), file)
             
     def _select_action(self):
         action = torch.zeros(self._num_sensors, dtype=torch.int, device=device)
@@ -194,7 +175,7 @@ class WSN_agent:
     def train(self):
         train_steps = 0
         throughput_reward_log = [-1 for _ in range(10)]
-        for i_episode in range(self._training_params.num_episodes):
+        for i_episode in range(self._config.num_episodes):
             # Initialize the environment and get its state
             print(self._env.reset())
             self._state, self._info = self._env.reset()
@@ -236,7 +217,7 @@ class WSN_agent:
                 
                 train_steps += 1                
                 with torch.no_grad():
-                    if train_steps >= self._training_params.train_every:
+                    if train_steps >= self._config.train_every:
                         train_steps = 0
 
                         # Perform one step of the optimization (on the policy network)
@@ -251,30 +232,25 @@ class WSN_agent:
                     #self._train_steps[reward_type] += 1
         
 if __name__ == '__main__':
+    # RL parametrs
+    batch_size = 64 
+    memory_capacity = 1024 
+    gamma = 0.99
+    max_steps = 9999 
+    lr = 0.25e-2
+    n_epochs = 10
+    train_every = 1024 
+    training_config = Multi_Agent_PPO_Config(batch_size=batch_size, memory_capacity=memory_capacity, max_steps=max_steps, lr=lr, gamma=gamma, n_epochs=n_epochs, train_every=train_every)
+    
     # Simulation parmaters
     sensor_ids = range(5,15)
     sampling_freq = 4
     transmission_size = 2*1500
     observation_time = 1
-    local_mininet_simulation = True 
-    server_ip = "192.168.0.162" # IP of mininet simulation; ignored if local_mininet_simulation = True
+    local_mininet_simulation = False 
+    server_ip = "192.168.1.114" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True
-    mininet_simulation_parameters = Mininet_Simulation_Parameters(sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, local_simulation=local_mininet_simulation, remote_simulation_ip=server_ip, remote_simulation_port=server_port)
+    mininet_simulation_config = Mininet_Simulation_Config(sensor_ids, sampling_freq=sampling_freq, transmission_size=transmission_size, observation_time=observation_time, local_simulation=local_mininet_simulation, remote_simulation_ip=server_ip, remote_simulation_port=server_port)
 
-    # RL parametrs
-    BATCH_SIZE = 64 
-    memory_capacity = 1024 
-    GAMMA = 0.99
-    EPS_DECAY = 3000 
-    EPS_START = 0.3
-    EPS_END = 0
-    max_steps = 9999 
-    LR = 0.25e-2
-    n_epochs = 10
-    train_every = 128
-
-
-    training_parameters = Training_Parameters(BATCH_SIZE=BATCH_SIZE, memory_capacity=memory_capacity, max_steps=max_steps, LR=LR, EPS_DECAY=EPS_DECAY, EPS_START=EPS_START, EPS_END=EPS_END, GAMMA=GAMMA, n_epochs=n_epochs, train_every=train_every)
-
-    agent = WSN_agent(mininet_simulation_parameters, training_parameters)
+    agent = WSN_agent(mininet_simulation_config, training_config)
     agent.train()
