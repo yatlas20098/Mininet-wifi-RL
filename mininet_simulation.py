@@ -16,16 +16,16 @@ import math
 import pickle
 import os
 
+
 from configs import Mininet_Simulation_Config
 import networkx as nx
-from networkx.algorithms import approximation as approx
-from pulp import LpProblem, LpMaximize, LpVariable, lpSum, LpBinary, PULP_CBC_CMD
 from itertools import combinations
 from ortools.linear_solver import pywraplp
 import scipy.interpolate 
 
 from tqdm import tqdm
 from mininet.node import Controller
+from mininet.node import RemoteController
 from mininet.log import setLogLevel, info
 from mn_wifi.net import Mininet_wifi
 from mn_wifi.cli import CLI
@@ -64,13 +64,14 @@ class sensor_cluster():
     Read data received by cluster head from sensors
 
     Args:
+        cluster_idx (int): idx of the cluster the clusterhead belongs to
         file_path (string): Path to file with received data 
         sensor_id (int): ID of the sensor whose data should be read 
 
     Returns:
         String List: List of received packets 
     """
-    def _read_temperature_data(self, file_path, sensor_id):
+    def _read_temperature_data(self, file_path, cluster_idx, sensor_idx):
         with open(file_path, 'r') as file:
             data = []
             bytes_received = 0
@@ -89,8 +90,8 @@ class sensor_cluster():
                     continue
             
             # Update throughputs
-            self._previous_throughputs[sensor_id] = self._throughputs[sensor_id]
-            self._throughputs[sensor_id] = bytes_received // self._config.transmission_size # Measured by number of succesful transmissions
+            self._previous_throughputs[cluster_idx][sensor_idx] = self._throughputs[cluster_idx][sensor_idx]
+            self._throughputs[cluster_idx][sensor_idx] = bytes_received // self._config.transmission_size # Measured by number of succesful transmissions
         return np.array(data)
 
     """
@@ -219,7 +220,7 @@ class sensor_cluster():
     """
     def _calculate_rewards(self, redudancy_graph, sensor_effective_throughputs):
         # TODO: Add option to use either cliques or MIS when calculting rewards
-        bounded_log = lambda x: np.log2(min(1, max(0.2, x))) 
+        bounded_log = lambda x: np.log2(min(1, max(0.05, x))) 
         
         # Get similarity reward
         max_throughput = max(self._throughputs)
@@ -231,7 +232,7 @@ class sensor_cluster():
 
         max_ind_set = approx.maximum_independent_set(redudancy_graph) 
         maxF = np.max(self._transmission_rates)
-        total_throughput_bound = (len(max_ind_set)) * maxF 
+        total_throughput_bound = self._num_sensors * maxF / 2
         throughput_reward = [bounded_log(ind_set_total_throughput / total_throughput_bound) for i in range(self._num_sensors)]
 
         #min_throughput = np.min([self._throughputs[i] for i in max_ind_set])
@@ -289,30 +290,111 @@ class sensor_cluster():
     Returns:
         temperature_data (dict): a dict with sensors as keys and values as a list of the temprature data transmitted by a sensor 
     """
-    def _get_temperature_data(self):
+    def _get_temperature_data(self, cluster_idx):
         # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
         temperature_data = {}
-
-        for i in range(self._num_sensors):
+        
+        for sensor_idx in range(self._num_sensors):
             # Name of file where transmisions received by the cluster head from sensor i is stored
-            file_name = f'sensor_{self._config.sensor_ids[i]}.txt'
+            file_name = f'sensor_{self._config.sensor_ids[sensor_idx]}.txt'
 
             # Create a copy of the original file
-            subprocess.run(["cp", f'{self._log_directory}/ch_received_data/{file_name}', f'{self._log_directory}/ch_received_data/.{file_name}'])
-            file_path = os.path.join(self._log_directory, f'ch_received_data/.{file_name}')
+            subprocess.run(["cp", f'{self._log_directory}/ch{cluster_idx}_received_data/{file_name}', f'{self._log_directory}/ch{cluster_idx}_received_data/.{file_name}'])
+            file_path = os.path.join(self._log_directory, f'ch{cluster_idx}_received_data/.{file_name}')
 
             # Clear the file for future transmissions
             # TODO: Lock before clearing?
-            with open(f'{self._log_directory}/ch_received_data/{file_name}', 'r+') as file:
+            with open(f'{self._log_directory}/ch{cluster_idx}_received_data/{file_name}', 'r+') as file:
                 file.truncate(0)
            
             # Read the temperature data for sensor i from the copied file
             sensor_data = self._read_temperature_data(file_path, i)
             if len(sensor_data) > 0:
-                temperature_data[i] = sensor_data
+                temperature_data[cluster_idx][i] = sensor_data
                 data_arrived = True
 
         return temperature_data
+    
+    def _update_rates(self, cluster_idx, rates)
+        # Clear transmissions
+        for i in range(self._num_sensors):
+            self._transmission_rates[cluster_idx][i] = rates[i] 
+
+            # Name of file where transmisions received by the cluster head from sensor i is stored
+            file_name = f'sensor_{self._config.sensor_ids[i]}.txt'
+
+            # Clear the file for future transmissions
+            # TODO: Lock before clearing?
+            with open(f'{self._log_directory}/ch{cluster_idx}_received_data/{file_name}', 'r+') as file:
+                file.truncate(0)
+
+    def _get_observation_cluster(self, cluster_idx, action):
+        rates = action[:self._num_sensors]
+        replay = action[-1]
+
+        self._update_rates(cluster_idx, rates)
+
+        # Wait for observation time
+        observation_start_time = time.time()
+        time.sleep(self._config.observation_time)
+        observation_period_err = (time.time() - observation_start_time) / self._config.observation_time
+
+        # Dict with keys as awake sensor ids and values as the data received by the cluster head from a sensor
+        temperature_data = self._get_temperature_data(cluster_idx)
+
+        self._throughputs[cluster_idx] = [t / observation_period_err for t in self._throughputs]
+        
+        # Get similarity matrix and redudancy graph
+        similarity, redudancy_graph, sensor_effective_throughputs = self._compute_similarity_and_redudancy_graph(temperature_data, replay)
+        total_throughput = np.sum(self._throughputs)
+
+        #print(f'Awake sensors: {awake_sensors}')
+        #print(f'Rates (Transmissions per second) : {[a for a in self.transmission_freq_idxs]}')
+        #print(f'Chunks sent: {list(self._chunks_sent)}')
+        #print(f'Throughputs (# of sucessfull transmissions) : {self._throughputs}')
+        print(f'Total throughput over observation: {total_throughput} succesfull transmissions')
+     
+        # self.similarity_log[cluster_idx].append(similarity)
+        if total_throughput == 0:
+            reward = {
+                    "throughput": [-5]*self._num_sensors,
+                    "similarity": [-5]*self._num_sensors
+                    }
+            return (similarity, self._throughputs, reward, rates)
+
+        rewards, max_ind_set = self._calculate_rewards(redudancy_graph, sensor_effective_throughputs) 
+
+        # Log sensor data and rewards 
+        # self.chunks_sent_log.append(list(self._chunks_sent))
+        # for i in range(self._num_sensors):
+            # self.throughput_log[i].append(self._throughputs[i])
+            # self.energy_log[i].append(self._energy[i])
+            # self.rate_log[i].append(self._transmission_rates[i])
+            # self._chunks_sent[i] = 0
+
+        self.max_ind_set_log.append(max_ind_set)
+        self.reward_log["similarity"].append(rewards["similarity"])
+        self.reward_log["throughput"].append(rewards["throughput"])
+        
+        # Pickle logs for plotting 
+        with open('figure_data.pkl', 'wb') as file:
+            pickle.dump((self._config.sensor_ids, list(self._transmission_rates), self.rate_log, self.energy_log, self.throughput_log, self.reward_log, self.similarity_reward_log, self.throughput_reward_log, self.max_ind_set_log, self.chunks_sent_log), file)
+
+        return (similarity, self._throughputs, rewards, rates)
+
+    def _update_rates(self, cluster_idx, rates)
+        # Clear transmissions
+        for i in range(self._num_sensors):
+            self._transmission_rates[cluster_idx][i] = rates[i] 
+
+            # Name of file where transmisions received by the cluster head from sensor i is stored
+            file_name = f'sensor_{self._config.sensor_ids[i]}.txt'
+
+            # Clear the file for future transmissions
+            # TODO: Lock before clearing?
+            with open(f'{self._log_directory}/ch{cluster_idx}_received_data/{file_name}', 'r+') as file:
+                file.truncate(0)
+
 
     """
     Get an observation of the enviornment.
@@ -333,17 +415,7 @@ class sensor_cluster():
         rates = action[:self._num_sensors]
         replay = action[-1]
 
-        # Clear transmissions
-        for i in range(self._num_sensors):
-            self._transmission_rates[i] = rates[i] 
-
-            # Name of file where transmisions received by the cluster head from sensor i is stored
-            file_name = f'sensor_{self._config.sensor_ids[i]}.txt'
-
-            # Clear the file for future transmissions
-            # TODO: Lock before clearing?
-            with open(f'{self._log_directory}/ch_received_data/{file_name}', 'r+') as file:
-                file.truncate(0)
+        self._clear_transmissions() 
 
         observation_start_time = time.time()
         print('Getting observation')
@@ -368,8 +440,8 @@ class sensor_cluster():
         self.similarity_log.append(similarity)
         if total_throughput == 0:
             reward = {
-                    "throughput": [0]*self._num_sensors,
-                    "similarity": [0]*self._num_sensors
+                    "throughput": [-5]*self._num_sensors,
+                    "similarity": [-5]*self._num_sensors
                     }
             return (similarity, self._throughputs, reward, rates)
 
@@ -420,31 +492,35 @@ class sensor_cluster():
                 self._transmission_rates[sensor_idx] = rates[sensor_idx]
 
             self._send_observation_to_rl_agent(rates)
-   
-    """
-    Create Mininet topology
-    """
-    def _create_topology(self):
-        # build network
-        self._net = Mininet_wifi(controller=Controller, link=wmediumd, wmediumd_mode=interference)
+    
+    def _create_cluster(self, cluster_id):
+        cluster = []
 
         info("*** Creating nodes\n")
-
         # create accesspoint
         self._net.addAccessPoint(f'ap23', ssid=f'new-ssid', mode='g', channel='5', position='50,50,0', cpu=1, mem=1024*2)
        
         #create cluster head
         self._cluster_head = self._net.addStation(f'ch', ip=f'192.168.0.100/24',
-                                      range='150', position='30,30,0', cpu=1, mem=1024*2)
-        
+                                      range='150', position='70,70,0', cpu=1, mem=1024*2)
+        cluster.append(cluster_head) 
         #create sensors 
         self._sensors = []
         for i in range(self._num_sensors):
             ip_address = f'192.168.0.{i + 1}/24'
-            self._sensors.append(self._net.addStation(f's{i}', ip=ip_address, range='116', position=f'{-90 - i},-90,0', cpu=1, mem=1024*2))
+            self._sensors.append(self._net.addStation(f's{i}', ip=ip_address, range='116', position=f'{30 + i},30,0', cpu=1, mem=1024*2))
 
+    """
+    Create Mininet topology
+    """
+    def _create_topology(self):
+        # build network
+        self._net = Mininet_wifi(controller=RemoteController, link=wmediumd, wmediumd_mode=interference)
+        
+        info("*** Creating clusters\n")
+        
         info("*** Adding Controller\n")
-        self._net.addController(f'c0')
+        self._net.addController(f'c0', controller=RemoteController, ip="0.0.0.0", port=6653)
 
         info("*** Configuring wifi nodes\n")
         self._net.configureWifiNodes()
@@ -527,6 +603,7 @@ class sensor_cluster():
         sensor_idx (int): index of sensor
     """
     def _send_messages_to_cluster_head(self, sensor, ch_ip, sensor_idx):
+        print("sending messages")
         # Get the interpolated temperature data corresponding to this sensor
         sensor_data = self._datasets[sensor_idx] 
         
@@ -578,6 +655,7 @@ class sensor_cluster():
 
             # Get the sensors current transmission rate
             transmit_rate = self._transmission_rates[sensor_idx]
+            print(f"Transmitting {transmit_rate} packets")
             
             # Sensor should skip tranmission during the current frame
             if transmit_rate == 0:
@@ -595,7 +673,7 @@ class sensor_cluster():
             temp = f'{sensor_data(time.time() - self._simulation_start_time):.4f}' 
          
             # Send the recorded temperature with filler as padding
-            cmd = f'echo "\n{temp}\n{filler[len(temp) + 6:]}\n" | nc -v -w0 -u {ch_ip} {port} >> {self._log_directory}/error/nc{sensor_idx} 2>&1 &'
+            cmd = f'echo "\n{temp}\n{filler[len(temp) + 6:]}\n" | nice -n -10 nc -v -w0 -u {ch_ip} {port} >> {self._log_directory}/error/nc{sensor_idx} 2>&1 &'
             sensor.cmd(cmd)
             self._chunks_sent[sensor_idx] += 1
 
@@ -672,9 +750,9 @@ class sensor_cluster():
             ch_ip = f'192.168.0.100'
 
             for i, sensor in enumerate(self._sensors):
-                tcpdump_file = f'{self._log_directory}/pcaps/tcpdump_sender_sensor{i}.pcap'
-                sensor.cmd(f'tcpdump -U -i s{i}-wlan0 -w {tcpdump_file} &')
-                
+                #tcpdump_file = f'{self._log_directory}/pcaps/tcpdump_sender_sensor{i}.pcap'
+                #sensor.cmd(f'tcpdump -U -i s{i}-wlan0 -w {tcpdump_file} &')
+                print("Starting sender thread {i}") 
                 thread = threading.Thread(target=self._send_messages_to_cluster_head, args=(sensor, ch_ip, i))
                 thread.start()
                 sender_threads.append(thread)

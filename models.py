@@ -17,6 +17,9 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.nn.init as init
+from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.nn import GATConv
+
 
 from torch.distributions.categorical import Categorical 
 
@@ -91,31 +94,61 @@ class DQN(nn.Module):
     def forward(self, x):
         return self._layers(x).to(self._device)
 
+class GraphEncoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim, device):
+        super().__init__()
+        self.device = device
+        self.gat1 = GATConv(input_dim, hidden_dim, heads=4, concat=True)
+        self.gat2 = GATConv(hidden_dim * 4, hidden_dim, heads=1, concat=True)
+
+        self.to(device)
+
+    def forward(self, x, edge_index):
+        x = F.relu(self.gat1(x.float(), edge_index))
+        x = F.relu(self.gat2(x, edge_index))
+        
+        return x
+
 # (s) -> a
 class ActorNetwork(nn.Module):
-    def __init__(self, n_actions, input_dims, lr, device, chkpt_dir=".\actor.chkpt", fc1_dims=256, fc2_dims=256):
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                init.orthogonal_(m.weight)
+                if m.bias is not None:
+                    init.zeros_(m.bias)
+
+    def __init__(self, n_agents, n_actions, input_dim, lr, device, chkpt_dir=".\actor.chkpt", hidden_dim=16):
         super(ActorNetwork, self).__init__()
         self.device = device
- 
+        id_embedding_dim = 16 
+        self._id_embeddings = nn.Embedding(n_agents, id_embedding_dim)
         self._checkpoint_file = os.path.join(chkpt_dir, 'actor_torch_ppo')
-        self._layers = nn.Sequential(
-            nn.Linear(input_dims, fc1_dims), 
+        self._graph_encoder = GraphEncoder(input_dim + id_embedding_dim, hidden_dim, device)
+        self._mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(fc1_dims, fc2_dims),
-            nn.ReLU(),
-            nn.Linear(fc2_dims, n_actions),
-            nn.Softmax(dim=-1)
+            nn.Linear(hidden_dim, n_actions)
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
+        self._initialize_weights()
         self.to(device)
  
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
-    def forward(self, state):
-        dist = self._layers(state)
-        dist = Categorical(dist) # switch to categorical distrbuition
-        return dist
+    def forward(self, state, agent_ids):
+        # Add id embeddings as node features
+        num_graphs = getattr(state, 'num_graphs', 1) 
+        agent_ids = agent_ids.unsqueeze(0).repeat(num_graphs, 1).view(-1)
+        id_vecs = self._id_embeddings(agent_ids)
+        state_w_ids = torch.cat([state.x, id_vecs], dim=-1)
+
+        node_embedding = self._graph_encoder(state_w_ids, state.edge_index)
+        logits = self._mlp(node_embedding)
+
+        #logits = self._layers(state)
+        return Categorical(logits=logits) # switch to categorical distrbuition
 
     def save_checkpoint(self):
         torch.save(self.state_dict(), self._checkpoint_file)
@@ -125,27 +158,38 @@ class ActorNetwork(nn.Module):
 
 # (s, a) -> Q
 class CriticNetwork(nn.Module):
-    def __init__(self, input_dims, output_dims, lr, device, chkpt_dir=".\critic.chkpt", fc1_dims=256, fc2_dims=256):
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                init.orthogonal_(m.weight)
+
+               # init.kaiming_uniform_(m.weight, nonlinearity='relu')  # or use xavier_uniform_
+                if m.bias is not None:
+                    init.zeros_(m.bias)
+
+
+    def __init__(self, input_dim, output_dim, lr, device, chkpt_dir=".\critic.chkpt", hidden_dim=32):
         super(CriticNetwork, self).__init__()
         self.device = device
 
         self._checkpoint_file = os.path.join(chkpt_dir, 'critic_torch_ppo')
-        self._layers = nn.Sequential(
-            nn.Linear(input_dims, fc1_dims), 
+        self._graph_encoder = GraphEncoder(input_dim, hidden_dim, device)
+        self._mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(fc1_dims, fc2_dims),
-            nn.ReLU(),
-            nn.Linear(fc2_dims, output_dims),
-            nn.Softmax(dim=-1)
+            nn.Linear(hidden_dim, output_dim)
         )
-
+        
+        self._initialize_weights()
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
         self.to(device)
 
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
     def forward(self, state):
-        value = self._layers(state)
+        graph_embedding = self._graph_encoder(state.x, state.edge_index)
+        x = global_mean_pool(graph_embedding, state.batch)
+        value = self._mlp(x)
         
         return value
 
