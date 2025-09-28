@@ -105,7 +105,7 @@ class WSN_agent:
         self._loss = {}
 
         load_agent = True 
-        n_obs = 2
+        n_obs = 1
 
         if load_agent:
             print("Loading agents")
@@ -147,7 +147,6 @@ class WSN_agent:
     def _optimize_model_for_cluster(self, cluster):
         total_loss = 0
         for epoch in range(self._config.n_epochs):
-            minibatches = []
             critic_total_loss = 0
             actor_total_loss = 0
 
@@ -165,7 +164,8 @@ class WSN_agent:
 
             for batch in batches:
                 states = [states_arr[i] for i in batch]
-                states = Batch.from_data_list(states).to(device)
+                #connectivity_graphs, redundancy_graphs = zip(*states)
+                states = [Batch.from_data_list(graphs).to(device) for graphs in zip(*states)]
                 last_state = states_arr[batch[-1]]
 
                 actions = actions_arr[batch].view(-1)
@@ -182,13 +182,13 @@ class WSN_agent:
                         reward = similarity_reward[batch]
 
                     with torch.no_grad():
-                        last_value = self._critic_net[reward_type](last_state).squeeze()
+                        last_value = self._critic_net[reward_type](last_state, self._agent_ids).squeeze()
                         values = torch.cat([values, last_value.unsqueeze(0)], dim=0)
                         # Note that deltas cannot be accurately computed for 
                         # terminated states in our IoT env. Env changes are 
                         # effectivly random and independent of actions. Thus, 
                         # when training, we ignore terminated states.
-                        deltas = (reward + self._config.gamma*values[1:] - values[:-1])*(1-dones)
+                        deltas = (reward + self._config.gamma*values[1:] - values[:-1])*(1.0-dones)
                         advantage = torch.zeros_like(deltas)
 
                     gae = 0.0
@@ -201,7 +201,7 @@ class WSN_agent:
                     #norm_advantage = advantage
 
                     dists = self._actor_net(states, self._agent_ids)
-                    critic_value = self._critic_net[reward_type](states)
+                    critic_value = self._critic_net[reward_type](states, self._agent_ids)
                     critic_value = torch.squeeze(critic_value)
                     
                     new_probs = dists.log_prob(actions.view(-1))
@@ -209,25 +209,40 @@ class WSN_agent:
                     
                     weighted_probs = norm_advantage.unsqueeze(1) * prob_ratio
                     weighted_clipped_probs = torch.clamp(prob_ratio, 
-                                                            (1.0 - self._config.policy_clip)*torch.ones_like(prob_ratio),
-                                                            (1.0 + self._config.policy_clip)*torch.ones_like(prob_ratio))*norm_advantage.unsqueeze(1)
-                    actor_loss =- torch.min(weighted_probs, weighted_clipped_probs).mean()
+                                                            (1.0 - self._config.policy_clip),
+                                                            (1.0 + self._config.policy_clip))*norm_advantage.unsqueeze(1)
+
+                    not_done_mask = (dones == 0)
+                    actor_loss = -torch.min(weighted_probs, weighted_clipped_probs)
+                    #actor_loss = actor_loss.reshape(self._config.batch_size, -1) * not_done_mask.unsqueeze(1)
+                    #actor_loss = actor_loss.view(-1).mean()
+
+                    actor_loss = actor_loss.reshape(batch_size, -1)
+                    masked_loss = actor_loss * not_done_mask.unsqueeze(1)
+
+                    # Mean loss per agent across batch
+                    mean_per_agent = masked_loss.sum(dim=0) / not_done_mask.sum(dim=0).clamp(min=1e-6)
+                    actor_loss = mean_per_agent.mean()
+
                     entropy = dists.entropy().mean()
                     self._actor_net.optimizer.zero_grad()
                     (actor_loss - self._config.entropy_coef*entropy).backward()
-                    torch.nn.utils.clip_grad_norm_(self._actor_net.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self._actor_net.parameters(), max_norm=5.0)
                     self._actor_net.optimizer.step()
-
-                    # print("Advantage: ", norm_advantage[:10])
+                    
+                    # print("Advantage: ", advantage[:10])
+                    # print("Norm Advantage: ", norm_advantage[:10])
                     # print("Values: ", values[:10])
                     # print("Rewards: ", reward[:10])
-                
+                    
+                    not_done_mask = (dones == 0)
                     returns = (advantage + values[:-1]).detach()
-                    critic_loss = (returns - critic_value)**2 
+                    critic_loss = (returns - critic_value)**2
+                    critic_loss = critic_loss[not_done_mask]
                     critic_loss = critic_loss.mean()
                     self._critic_net[reward_type].optimizer.zero_grad()
                     (self._config.value_loss_coef*critic_loss).backward()
-                    torch.nn.utils.clip_grad_norm_(self._critic_net[reward_type].parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self._critic_net[reward_type].parameters(), max_norm=5.0)
                     self._critic_net[reward_type].optimizer.step()
                     
                     actor_total_loss += actor_loss
@@ -253,7 +268,7 @@ class WSN_agent:
 
         for i in range(self._sim_config.num_clusters):
             dists = self._actor_net(self._state[i], self._agent_ids)
-            value = self._critic_net['throughput'](self._state[i]).detach()
+            value = self._critic_net['throughput'](self._state[i], self._agent_ids).detach()
             action = dists.sample()
             prob = dists.log_prob(action).detach()
 
@@ -276,6 +291,7 @@ class WSN_agent:
         for i_episode in range(self._config.num_episodes):
             # Initialize the environment and get its state
             self._state, self._info = self._env.reset()
+            print(self._state)
 
             # for t in count():
             for t in range(self._config.max_steps):
@@ -285,8 +301,7 @@ class WSN_agent:
                 prev_state, prev_actions, prev_probs, prev_values = self._state, actions, probs, values
                 
                 # Sample the next frame from the enviornment, and receive a reward
-                observations, rewards, terminated, truncated, _ = self._env.step(self._steps_done, actions)
-
+                self._state, rewards, terminated, truncated, _ = self._env.step(self._steps_done, actions)
 
                 prev_throughput_rewards, prev_similarity_rewards = throughput_rewards, similarity_rewards
 
@@ -303,10 +318,10 @@ class WSN_agent:
                                         
                     if not first_step:
                         # Store the transition in memory
-                        self._memory[cluster_idx].push(prev_state[cluster_idx].clone(), done, prev_actions[cluster_idx], prev_probs[cluster_idx], prev_values[cluster_idx].detach(), next_state[cluster_idx], prev_throughput_rewards[cluster_idx].detach(), prev_similarity_rewards[cluster_idx].detach())
+                        self._memory[cluster_idx].push(prev_state[cluster_idx], done, prev_actions[cluster_idx], prev_probs[cluster_idx], prev_values[cluster_idx].detach(), next_state[cluster_idx], prev_throughput_rewards[cluster_idx].detach(), prev_similarity_rewards[cluster_idx].detach())
 
                     if not done:
-                        next_state[cluster_idx] = observations[cluster_idx].clone().detach()
+                        next_state[cluster_idx] = self._state[cluster_idx]
 
                 # Move to the next state
                 self._state = next_state
@@ -328,14 +343,14 @@ class WSN_agent:
                 
 if __name__ == '__main__':
     # RL parametrs
-    batch_size = 10000 
-    gamma = 0.95
-    gae_lambda = 0.97
+    batch_size = 25*10 
+    gamma = 0.99
+    gae_lambda = 0.8
     max_steps = 1500
-    critic_lr = 1e-3
-    actor_lr = 5e-4
-    n_epochs = 15 
-    train_every = 20000
+    critic_lr = 7e-4
+    actor_lr = 7e-4
+    n_epochs = 5
+    train_every = 25*10 
 
     training_config = Multi_Agent_PPO_Config(batch_size=batch_size, max_steps=max_steps, critic_lr=critic_lr, actor_lr=actor_lr, gamma=gamma, gae_lambda=gae_lambda, n_epochs=n_epochs, train_every=train_every)
     
@@ -344,7 +359,7 @@ if __name__ == '__main__':
     sensor_ids = range(5,15)
     sampling_freq = 4
     transmission_size = 1*1024 # bytes (1 packet)
-    observation_time = 0.04
+    observation_time = 0.1
     local_mininet_simulation = True 
     server_ip = "192.168.1.114" # IP of mininet simulation; ignored if local_mininet_simulation = True
     server_port = 5000 # Ignored if local_mininet_simulation = True

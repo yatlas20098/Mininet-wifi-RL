@@ -61,6 +61,7 @@ class Network():
         while not result_queue.empty():
             observations.append(result_queue.get())
         
+        print(observations)
         return observations
     
     """
@@ -222,6 +223,19 @@ class Network():
     def start(self):
         cluster_processes = []
         self._cluster_handlers = []
+        """
+        #for cluster_idx in range(self._config.num_clusters):
+        #    cluster_handler = Cluster_Handler(self._cluster_heads[cluster_idx],
+                                              self._cluster_sensors[cluster_idx], 
+                                              cluster_idx, 
+                                              self._config, log_directory=f'data/log')
+            
+        #    self._cluster_handlers.append(cluster_handler)
+        #    cluster_process = multiprocessing.Process(target=cluster_handler.start, args=())
+        #    cluster_process.start()
+        #    cluster_processes.append(cluster_process)
+        """
+
         for cluster_idx in range(self._config.num_clusters):
             cluster_handler = Cluster_Handler(self._cluster_heads[cluster_idx],
                                               self._cluster_sensors[cluster_idx], 
@@ -229,9 +243,10 @@ class Network():
                                               self._config, log_directory=f'data/log')
             
             self._cluster_handlers.append(cluster_handler)
-            cluster_process = multiprocessing.Process(target=cluster_handler.start, args=())
+            cluster_process = threading.Thread(target=cluster_handler.start, args=())
             cluster_process.start()
             cluster_processes.append(cluster_process)
+
 
         #while True:
             #self.get_observation([[400]*11] * self._config.num_clusters)

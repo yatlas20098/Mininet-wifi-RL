@@ -32,9 +32,12 @@ def throughput(sim_config, redundancy_graph):
     redundant_throughput = total_throughput - ind_set_total_throughput
     
     maxF = np.max(sim_config.transmission_frequencies)
-    total_throughput_bound = len(sim_config.sensor_ids) * maxF
+    mis = approx.maximum_independent_set(redundancy_graph)
+    #total_throughput_bound = len(sim_config.sensor_ids) * maxF
     # TODO: divide by number of sensors, not 10
-    throughput_reward = (ind_set_total_throughput - 0.5*redundant_throughput) / 10
+    throughput_reward = (ind_set_total_throughput - 0.1*redundant_throughput) / len(mis)
+    #throughput_reward = (ind_set_total_throughput - 0.5*redundant_throughput) / len(sim_config.sensor_ids)
+
 
     #throughput_reward = bounded_log((ind_set_total_throughput - redundant_throughput) / total_throughput_bound) / 4
 

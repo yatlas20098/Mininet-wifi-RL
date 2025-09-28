@@ -143,7 +143,11 @@ class Cluster_Handler():
             ms = int((transmission_start_time - time.perf_counter()) * 1000)
             
             # Get the temp 
-            temp = f'{sensor_data((transmission_start_time - self._simulation_start_time + self._offset) % (int(self._min_dataset_t) - 1)):.4f}' 
+            #temp = f'{sensor_data((transmission_start_time - self._simulation_start_time + self._offset) % (int(self._min_dataset_t) - 1)):.4f}' 
+
+            #temp = f'{sensor_data((self._simulation_start_time + self._offset) % (int(self._min_dataset_t) - 1)):.4f}'
+            a = (self._simulation_start_time + self._offset) * (1 + (self._n_train_steps // 25))
+            temp = f'{sensor_data(a % (int(self._min_dataset_t) - 1)):.4f}' 
          
             # Send the recorded temperature with filler as padding
             cmd = f'echo "\n{temp}\n{filler[len(temp) + 6:]}\n" | nice -n 10 nc -v -w0 -u {ch_ip} {port + (self._cluster_idx*(self._num_sensors + 1))} >> {self._log_directory}/error{self._cluster_idx}/nc{sensor_idx} 2>&1 &'
@@ -313,9 +317,9 @@ class Cluster_Handler():
                     # If conversion fails or the line doesn't have enough columns, skip this line
                     continue
 
-            xs = np.arange(len(data))/120
+            xs = np.arange(len(data))/(240)
             interp_func = scipy.interpolate.interp1d(xs, data)
-            self._min_dataset_t = min(len(data)/120, self._min_dataset_t)
+            self._min_dataset_t = min(len(data)/(240), self._min_dataset_t)
             return interp_func
 
     """
@@ -501,6 +505,7 @@ class Cluster_Handler():
     """
 
     def get_observation(self, action):
+        self._n_train_steps += 1
         rates = action[:self._num_sensors]
         replay = action[-1]
         
@@ -516,7 +521,7 @@ class Cluster_Handler():
         # Get similarity matrix and redudancy graph
         transmit_freqs = [self._config.transmission_frequencies[int(r)] for r in rates]
 
-        similarity, redundancy_graph = compute_similarity_and_redundancy_graph(self._config, transmit_freqs, temperature_data, throughputs, replay)
+        similarity, connectivity_graph, redundancy_graph = compute_similarity_and_redundancy_graph(self._config, transmit_freqs, temperature_data, throughputs, replay)
         total_throughput = np.sum(throughputs)
 
         terminated = self._similarity_changed(similarity)
@@ -531,14 +536,18 @@ class Cluster_Handler():
 
             self._update_logs(throughputs, similarity, rewards, None)
             redundancy_graph = from_networkx(redundancy_graph)
+            connectivity_graph = from_networkx(connectivity_graph)
 
-            return (terminated, redundancy_graph, rewards)
+
+            return (terminated, connectivity_graph, redundancy_graph, rewards)
 
         rewards, reward_output = get_rewards(reward_config, self._config, redundancy_graph)
         self._update_logs(throughputs, similarity, rewards, reward_output)
 
         redundancy_graph = from_networkx(redundancy_graph)
-        return (terminated, redundancy_graph, rewards)
+        connectivity_graph = from_networkx(connectivity_graph)
+
+        return (terminated, connectivity_graph, redundancy_graph, rewards)
 
 
     def _send_observation_to_rl_agent(self, rates):
@@ -588,7 +597,8 @@ class Cluster_Handler():
         self._total_throughput = 0
         self._max_total_throughput = 0
         self._prev_obs_end_time = multiprocessing.Array('d', [time.perf_counter()] * self._num_sensors)
-        self._offset = random.randint(0, 100000)
+        self._offset = random.randint(50000, 100000)
+        self._n_train_steps = 0
         self._min_dataset_t = 99999999
         self._prev_similarity = None
         self._t_since_last_sim_change = 999999999

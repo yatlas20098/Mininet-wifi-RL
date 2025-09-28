@@ -282,6 +282,7 @@ class sensor_cluster():
                     max_throughput = max(sensor_effective_throughputs[i], sensor_effective_throughputs[j])
                     sensor_effective_throughputs[i] = sensor_effective_throughputs[j] = max_throughput
 
+
         return similarity, redudancy_graph, sensor_effective_throughputs
 
     """
@@ -345,7 +346,7 @@ class sensor_cluster():
         self._throughputs[cluster_idx] = [t / observation_period_err for t in self._throughputs]
         
         # Get similarity matrix and redudancy graph
-        similarity, redudancy_graph, sensor_effective_throughputs = self._compute_similarity_and_redudancy_graph(temperature_data, replay)
+        similarity, connectivity_graph, redudancy_graph = self._compute_similarity_and_redudancy_graph(temperature_data, replay)
         total_throughput = np.sum(self._throughputs)
 
         #print(f'Awake sensors: {awake_sensors}')

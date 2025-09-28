@@ -16,7 +16,7 @@ class Mininet_Simulation_Config:
 
 
 class Multi_Agent_PPO_Config:
-    def __init__(self, batch_size=64, memory_capacity=256, gamma=0.99, tau=0.005, actor_lr=3e-4, critic_lr=1e-3, gae_lambda=0.99, policy_clip = 0.1, max_steps=100, num_episodes=99999999, train_every=2048, n_epochs=10):
+    def __init__(self, batch_size=64, memory_capacity=256, gamma=0.99, tau=0.005, actor_lr=3e-4, critic_lr=1e-3, gae_lambda=0.99, policy_clip = 0.2, max_steps=100, num_episodes=99999999, train_every=2048, n_epochs=10):
         self.batch_size = batch_size 
         self.gamma = gamma 
         self.tau = tau 
@@ -29,5 +29,5 @@ class Multi_Agent_PPO_Config:
         self.train_every = train_every
         self.n_epochs = n_epochs
         self.value_loss_coef = 0.5
-        self.entropy_coef = 1e-5
+        self.entropy_coef = 0.00
 
