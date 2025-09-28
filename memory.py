@@ -1,7 +1,7 @@
 from collections import namedtuple, deque
 import numpy as np
 
-Transition = namedtuple('Transition', ('state', 'action', 'probs', 'value', 'next_state', 'throughput_reward', 'similarity_reward'))
+Transition = namedtuple('Transition', ('state', 'done', 'action', 'probs', 'value', 'next_state', 'throughput_reward', 'similarity_reward'))
 
 class ReplayMemory(object):
     def __init__(self, capacity):
