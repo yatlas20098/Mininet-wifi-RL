@@ -98,14 +98,14 @@ class GraphEncoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, device):
         super().__init__()
         self.device = device
-        self.gat1 = GATConv(input_dim, hidden_dim, heads=4, concat=True)
-        self.gat2 = GATConv(hidden_dim * 4, hidden_dim, heads=1, concat=True)
+        self.gat1 = GATConv(input_dim, hidden_dim, heads=4, concat=False, dropout=0.1)
+        #self.gat2 = GATConv(hidden_dim * 4, hidden_dim, heads=1, concat=True, dropout=0.1)
 
         self.to(device)
 
     def forward(self, x, edge_index):
         x = F.relu(self.gat1(x.float(), edge_index))
-        x = F.relu(self.gat2(x, edge_index))
+        #x = F.relu(self.gat2(x, edge_index))
         
         return x
 
@@ -118,17 +118,37 @@ class ActorNetwork(nn.Module):
                 if m.bias is not None:
                     init.zeros_(m.bias)
 
-    def __init__(self, n_agents, n_actions, input_dim, lr, device, chkpt_dir=".\actor.chkpt", hidden_dim=16):
+    def __init__(self, n_agents, n_actions, input_dim, lr, device, chkpt_dir=r".\actor.chkpt", hidden_dim=128):
         super(ActorNetwork, self).__init__()
         self.device = device
-        id_embedding_dim = 16 
-        self._id_embeddings = nn.Embedding(n_agents, id_embedding_dim)
         self._checkpoint_file = os.path.join(chkpt_dir, 'actor_torch_ppo')
-        self._graph_encoder = GraphEncoder(input_dim + id_embedding_dim, hidden_dim, device)
-        self._mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+        self._connectivity_encoder = GraphEncoder(input_dim, hidden_dim, device)
+        self._redundancy_encoder = GraphEncoder(input_dim, hidden_dim, device)
+
+        self._connectivity_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
             nn.ReLU(),
-            nn.Linear(hidden_dim, n_actions)
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU()
+        )
+
+        self._redundancy_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU()
+        )
+
+        self._joint_mlp = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+            nn.Linear(32, n_actions)
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
@@ -138,14 +158,17 @@ class ActorNetwork(nn.Module):
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
     def forward(self, state, agent_ids):
-        # Add id embeddings as node features
-        num_graphs = getattr(state, 'num_graphs', 1) 
-        agent_ids = agent_ids.unsqueeze(0).repeat(num_graphs, 1).view(-1)
-        id_vecs = self._id_embeddings(agent_ids)
-        state_w_ids = torch.cat([state.x, id_vecs], dim=-1)
+        connectivity_graph = state[0]
+        redundancy_graph = state[1]
 
-        node_embedding = self._graph_encoder(state_w_ids, state.edge_index)
-        logits = self._mlp(node_embedding)
+        connectivity_embeddings = self._connectivity_encoder(connectivity_graph.x, connectivity_graph.edge_index)
+        redundancy_embeddings = self._redundancy_encoder(redundancy_graph.x, redundancy_graph.edge_index)
+
+        connectivity_scores = self._connectivity_mlp(connectivity_embeddings) 
+        redundancy_scores = self._redundancy_mlp(redundancy_embeddings)
+
+        joint_scores = torch.cat([connectivity_scores, redundancy_scores], dim=-1)
+        logits = self._joint_mlp(joint_scores)
 
         #logits = self._layers(state)
         return Categorical(logits=logits) # switch to categorical distrbuition
@@ -168,29 +191,62 @@ class CriticNetwork(nn.Module):
                     init.zeros_(m.bias)
 
 
-    def __init__(self, input_dim, output_dim, lr, device, chkpt_dir=".\critic.chkpt", hidden_dim=32):
+    def __init__(self, input_dim, output_dim, lr, device, chkpt_dir=r".\critic.chkpt", hidden_dim=128):
         super(CriticNetwork, self).__init__()
         self.device = device
 
         self._checkpoint_file = os.path.join(chkpt_dir, 'critic_torch_ppo')
-        self._graph_encoder = GraphEncoder(input_dim, hidden_dim, device)
-        self._mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+        self._connectivity_encoder = GraphEncoder(input_dim, hidden_dim, device)
+        self._redundancy_encoder = GraphEncoder(input_dim, hidden_dim, device)
+
+        self._connectivity_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
             nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU()
         )
-        
+
+        self._redundancy_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU()
+        )
+
+        self._joint_mlp = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+            nn.Linear(32, output_dim)
+        )
+
         self._initialize_weights()
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
         self.to(device)
 
     # Called with either one element to determine next action, or a batchduring optimization.
     # Returns tensor([[left0exp, right0exp]...])
-    def forward(self, state):
-        graph_embedding = self._graph_encoder(state.x, state.edge_index)
-        x = global_mean_pool(graph_embedding, state.batch)
-        value = self._mlp(x)
-        
+    def forward(self, state, agent_ids):
+        connectivity_graph = state[0]
+        redundancy_graph = state[1]
+
+        connectivity_embeddings = self._connectivity_encoder(connectivity_graph.x, connectivity_graph.edge_index)
+        redundancy_embeddings = self._redundancy_encoder(redundancy_graph.x, redundancy_graph.edge_index)
+
+        connectivity_scores = self._connectivity_mlp(connectivity_embeddings) 
+        redundancy_scores = self._redundancy_mlp(redundancy_embeddings)
+
+        connectivity_embedding = global_mean_pool(connectivity_scores, connectivity_graph.batch) 
+        redundancy_embedding = global_mean_pool(connectivity_scores, redundancy_graph.batch) 
+
+        joint_embedding = torch.cat([connectivity_embedding, redundancy_embedding], dim=-1)
+        value = self._joint_mlp(joint_embedding)
+
         return value
 
     def save_checkpoint(self):
