@@ -135,8 +135,7 @@ class CriticNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(fc1_dims, fc2_dims),
             nn.ReLU(),
-            nn.Linear(fc2_dims, output_dims),
-            nn.Softmax(dim=-1)
+            nn.Linear(fc2_dims, output_dims)
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
