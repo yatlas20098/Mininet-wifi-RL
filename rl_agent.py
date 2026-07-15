@@ -132,10 +132,16 @@ class WSN_agent:
                         new_probs = dist.log_prob(actions[batch])
                         prob_ratio = new_probs.exp() / old_probs.exp()
 
-                        weighted_probs = advantage[batch] * prob_ratio
-                        weighted_clipped_probs = torch.clamp(prob_ratio, (1-self._config.policy_clip)*torch.ones_like(prob_ratio),
-                                1 + self._config.policy_clip*advantage[batch])
-                        actor_loss = -torch.min(weighted_probs, weighted_clipped_probs).mean()
+			clipped_ratio = torch.clamp(
+			    prob_ratio,
+			    1-self._config.policy_clip,
+			    1+self._config.policy_clip
+			)
+
+			actor_loss = -torch.min(
+			    prob_ratio * advantage[batch],
+			    clipped_ratio * advantage[batch]
+			).mean()
 
                         returns = advantage[batch] + values[batch]
                         critic_loss = (returns - critic_value)**2
@@ -145,6 +151,9 @@ class WSN_agent:
                         #total_loss_log[reward_type] += total_loss
                         self._actor_net[agent].optimizer.zero_grad()
                         self._critic_net[reward_type][agent].optimizer.zero_grad()
+
+			total_loss.backward()				
+
                         self._actor_net[agent].optimizer.step()
                         self._critic_net[reward_type][agent].optimizer.step()
 
